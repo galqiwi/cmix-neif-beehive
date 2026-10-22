@@ -1,0 +1,47 @@
+{
+  "overrides": {
+    "n_key_value_heads": 1,
+    "value_embedding_pattern": [
+      null,
+      null,
+      null,
+      0,
+      null,
+      null,
+      null,
+      1,
+      null,
+      null,
+      null,
+      2,
+      null,
+      null,
+      null,
+      3
+    ],
+    "d_mlp": 1024,
+    "skip_connections": false,
+    "token_embedding_connections": false,
+    "prior_logit_mixing": true
+  },
+  "seed": 1,
+  "ve_sentinel": "clamp",
+  "arch": {
+    "attnres": {
+      "mode": "replace",
+      "block": 2,
+      "impl": "fused"
+    }
+  },
+  "name": "Y2_s1_e930_mfA_fp32",
+  "out": "/home/user/work/y2p/runs/br_Y2_s1_e930_mfA/fp32",
+  "phase": "fp32",
+  "init": "/home/user/work/y2p/runs/br_Y2_s1_e930_mfA/qat/model.tch",
+  "init_strict": true,
+  "epochs": 1,
+  "lr": 0.000003,
+  "warmup_frac": 0.0,
+  "final_mult": 1E-8,
+  "eval": true,
+  "mixed": "/home/user/work/y2p/runs/br_Y2_s1_e930_mfA/fisher/alloc_1.000.npz"
+}

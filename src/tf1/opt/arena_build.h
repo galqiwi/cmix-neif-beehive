@@ -74,15 +74,36 @@ struct KimiArenas {
   KdaWeights kw;                  // conv/dt_bias/gn_w point into the stream
 };
 
+#ifndef TF_DMLP
+#define TF_DMLP 768  // MLP width (container may use fewer neurons after pruning)
+#endif
+#ifndef TF_KVH
+#define TF_KVH 3   // key/value heads of the window layers (3 = shipped, 1 = GQA)
+#endif
+#ifndef TF_VE
+#define TF_VE 0    // value embeddings in the window layers
+#endif
+#ifndef TF_AR
+#define TF_AR 0    // AttnRes replace mode, block size in layers (0 = shipped U-Net form, 2 = v7 replace-B2)
+#endif
+#ifndef TF_PLM
+#define TF_PLM 0   // per-token prior head (logit_mixing_head) after the softcap
+#endif
 struct VanArenas {
-  QSite qp, kp, vp, op;  // 192x192, biased
+  QSite qp, kp, vp, op;  // q/o 192x192; k/v (TF_KVH*64)x192, biased
   float sq[3] = {}, sk[3] = {}, sv[3] = {};
   float coef[3] = {};  // 0.125f * sq[h] * sk[h] (same fp order as naive)
+  // value embedding: v = c0*v + c1*VE[token] (token < 208, else c0*v only)
+  const float* ve = nullptr;  // 208 x (TF_KVH*64), dequantized (outside the weight stream)
+  std::vector<float> ve_store;
+  float ve_c0 = 1.0f, ve_c1 = 0.0f;
 };
 
 struct MlpArenas {
   QSite up;                  // 768x192, biased; relu2q epilogue s_next below
   QSparse4 down;             // int4 columns, raw-u8 input (relu^2 output)
+  QSparse down8;             // research TF_W5: int8 columns when some |q| > 7
+  int down_wide = 0;
   float down_s_act = 0.0f;   // = mlp.down activation scale (relu2q s_next)
 };
 
@@ -122,7 +143,7 @@ struct OptModel {
   COLD_SIZE_ATTR OptModel() = default;
   static constexpr int V = 208, D = 192, NL = 16,
                        DH = 64, NH = 3,
-                       DMLP = 768, ROPE_LEN = 131072;
+                       DMLP = TF_DMLP, ROPE_LEN = 131072;
   static constexpr int NKIMI = 12, NVAN = 4,
                        NSKIP = 8;
   static constexpr const bool* KIMI_L = ::tf_kimi_pattern::kPat.v;
@@ -131,6 +152,8 @@ struct OptModel {
   size_t stream_bytes = 0;  // bytes of the per-token weight stream
 
   QSparse4 prior;        // 192x205, raw-u8 quantized prior
+  QSparse prior8;        // research TF_W5: int8 columns when some |q| > 7
+  int prior_wide = 0;
   float prior_s_act = 0.0f;
   KimiArenas kimi[NKIMI];
   VanArenas van[NVAN];
@@ -140,6 +163,19 @@ struct OptModel {
   int layer2kimi[NL] = {};
   int layer2van[NL] = {};
   float rsc[NL] = {}, tec[NL] = {}, skip_w[NSKIP] = {};
+#if TF_AR
+  // AttnRes replace mode (v7 arch.py, block TF_AR layers): one depth-mix query
+  // per sub-layer read plus the final read; values are bf16-rounded f32
+  // ('blocks.{l}.q_mix.w', 'blocks.{l}.q_mlp.w', 'blocks.15.q_final.w').
+  // U-Net skips and the residual/token coefficients do not exist in this form.
+  alignas(64) float ar_q_mix[NL][D] = {};
+  alignas(64) float ar_q_mlp[NL][D] = {};
+  alignas(64) float ar_q_final[D] = {};
+#endif
+#if TF_PLM
+  // logit_mixing_head.weight: the per-token prior head, D fp32 (bf16 values)
+  alignas(32) float plm_w[D] = {};
+#endif
   const float* tok_table = nullptr;  // 205x192 normed embedding rows
                                      // (with side channels: rows without norm,
                                      // the per-step row comes from

@@ -89,7 +89,7 @@ namespace opt {
 // [3]=number of per-head iterations profiled
 extern uint64_t g_attn_prof[4];
 
-constexpr int ATTN_WIN = 2048;
+constexpr int ATTN_WIN = 1536;
 static_assert(ATTN_WIN % 16 == 0 && ATTN_WIN >= 256,
               "ATTN_WIN must be a multiple of ATTN_BLK (16).");
 constexpr int ATTN_NH = 3;

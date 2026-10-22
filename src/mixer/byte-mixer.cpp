@@ -1,5 +1,6 @@
 #include "byte-mixer.h"
 #include "../vocab_frozen.h"
+#include "../cmx_exp.h"
 
 ByteMixer::ByteMixer(unsigned int num_models, const unsigned int& bit_context,
     const std::vector<bool>& vocab, unsigned int vocab_size, Lstm* lstm) :
@@ -69,6 +70,28 @@ void ByteMixer::ByteUpdate() {
       lstm_match_channel::st.ok_
           ? (unsigned int)byte_map_[lstm_match_channel::st.byte_]
           : vocab_size_;
+  if (cmx::O().nolstm) {
+    // research switch: no LSTM step; pass the PPMd distribution through
+    float tot = 0.0f;
+    for (unsigned int k = 0; k < vocab_size_; ++k) tot += inputs_[k];
+    if (tot <= 0.0f) tot = 1.0f;
+    for (int i = 0; i < 256; ++i) {
+      probs_[i] = vocab_frozen::InSet(i) ? inputs_[vocab_frozen::kByteMap[i]] / tot : 0.0f;
+    }
+    inputs_ = 0;
+    offset_ = 0;
+    {
+      int fex = 0;
+      float fbest = probs_[0];
+      for (int i = 1; i < 256; ++i) {
+        if (probs_[i] > fbest) { fbest = probs_[i]; fex = i; }
+      }
+      lstm_sharpen::state.full_ex = fex;
+      lstm_sharpen::state.full_best = fbest;
+    }
+    ByteModel::ByteUpdate();
+    return;
+  }
   lstm_->SetInput(inputs_);
   inputs_ = 0;
   const auto& output = lstm_->Perceive(byte_map_[byte_]);
@@ -99,10 +122,20 @@ void Tf1Slot::SetProbs(const float* set_probs) {
     probs_[i] = (vocab_[i] && transformer::InSet(i))
         ? set_probs[transformer::kByteToIndex[i]] : 0.0f;
   }
+  if (cmx::O().tfmix || cmx::O().tffinal) {
+    cmx::TfConf& t = cmx::T();
+    int ex = 0; float b1 = -1.0f, b2 = -1.0f;
+    for (int i = 0; i < 256; ++i) {
+      const float v = probs_[i];
+      if (v > b1) { b2 = b1; b1 = v; ex = i; } else if (v > b2) { b2 = v; }
+    }
+    t.ex = ex; t.best = b1; t.second = b2 < 0 ? 0.0f : b2; t.valid = 1;
+  }
   ByteModel::ByteUpdate();
 }
 
 void Tf1Slot::SetProbsNeutral() {
+  cmx::T().valid = 0;
   const float u = 1.0f / (float)transformer::kSetSize;
   for (int i = 0; i < 256; ++i) {
     probs_[i] = (vocab_[i] && transformer::InSet(i)) ? u : 0.0f;
@@ -111,6 +144,7 @@ void Tf1Slot::SetProbsNeutral() {
 }
 
 void Tf1Slot::SetProbsOff() {
+  cmx::T().valid = 0;
   for (int i = 0; i < 256; ++i) probs_[i] = 0.0f;
   ByteModel::ByteUpdate();
 }

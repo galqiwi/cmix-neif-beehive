@@ -1,4 +1,7 @@
 #include "encoder.h"
+#include "../cmx_exp.h"
+#include <cmath>
+extern float tf1_slot_output;
 
 Encoder::Encoder(std::ofstream* os, Predictor* p) : os_(os), x1_(0),
     x2_(0xffffffff), p_(p) {
@@ -37,13 +40,25 @@ void Encoder::Encode(int bit) {
     return;
   }
   unsigned int p = Discretize(p_->Predict());
-  if (bit_head::Enabled()
+  const unsigned int p_pre = p;
+  const bool bitl_on = !cmx::O().bitl_off;
+  if (bitl_on && bit_head::Enabled()
       && !bit_head::AuxOff()
       && !bit_head::MetaOff()
       && !p_->AdepthSkipped()
       ) {
     p = bit_head::Adjust(p, p_->bitl_stage1_, p_->bitl_n_stage1_,
                           p_->bitl_m1raw_, p_->bitl_override_);
+  }
+  if (cmx::O().log_every) {
+    cmx::Acct& a = cmx::A();
+    const double pf = p / 65536.0, pp = p_pre / 65536.0;
+    double pt = tf1_slot_output;
+    if (pt < 1e-6) pt = 1e-6; else if (pt > 1 - 1e-6) pt = 1 - 1e-6;
+    a.final_bits -= std::log2(bit ? pf : 1.0 - pf);
+    a.pre_bits -= std::log2(bit ? pp : 1.0 - pp);
+    a.tf_bits -= std::log2(bit ? pt : 1.0 - pt);
+    ++a.nbits;
   }
   const unsigned int xmid = x1_ + ((x2_ - x1_) >> 16) * p +
       (((x2_ - x1_) & 0xffff) * p >> 16);
@@ -52,7 +67,7 @@ void Encoder::Encode(int bit) {
   } else {
     x1_ = xmid + 1;
   }
-  if (bit_head::Enabled()
+  if (bitl_on && bit_head::Enabled()
       && !bit_head::AuxOff()
       && !bit_head::MetaOff()
       && !p_->AdepthSkipped()

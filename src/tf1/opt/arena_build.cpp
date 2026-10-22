@@ -9,6 +9,7 @@
 
 #include <sys/mman.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -118,7 +119,8 @@ void OptModel::load(const char* weights_path) {
 
   // int4 sparse-column arena site (d_out must be 192): [fold | cols]
   auto qsp4 = [&](const std::string& prefix, int d_in,
-                  float* s_act_out) -> QSparse4 {
+                  float* s_act_out, QSparse* wide8_out, int* wide_flag) -> QSparse4 {
+    (void)wide8_out; (void)wide_flag;
     const WTensor& wq =
         wf.get(prefix + ".weight.q", DT_I8,
                {static_cast<uint32_t>(D), static_cast<uint32_t>(d_in)});
@@ -133,6 +135,19 @@ void OptModel::load(const char* weights_path) {
     for (int o = 0; o < D; o++)
       fold[o] = s_act * bf16_to_f32(ws.bf16_bits()[o]);
     float* foldp = reinterpret_cast<float*>(take(sizeof(float) * D));
+#ifdef TF_W5
+    {
+      int mx = 0;
+      for (size_t i = 0; i < size_t(D) * d_in; i++) mx = std::max(mx, std::abs(int(wq.i8()[i])));
+      if (mx > 7) {
+        // research TF_W5: |q| up to 15 does not fit the nibble columns; int8 columns instead
+        int8_t* cols8 = reinterpret_cast<int8_t*>(take(qsparse_bytes(d_in)));
+        *wide8_out = qsparse_build(cols8, foldp, wq.i8(), fold.data(), D, d_in);
+        *wide_flag = 1;
+        return QSparse4{};
+      }
+    }
+#endif
     uint8_t* cols = take(qsparse4_bytes(d_in));
     return qsparse4_build(cols, foldp, wq.i8(), fold.data(), D, d_in);
   };
@@ -159,20 +174,43 @@ void OptModel::load(const char* weights_path) {
   };
 
   // ---- stream, in per-token consumption order ----
-  prior = qsp4("prior_embedding", V, &prior_s_act);
+  prior = qsp4("prior_embedding", V, &prior_s_act, &prior8, &prior_wide);
 
+#if TF_AR
+  // replace-mode AttnRes: the form is signalled by tensor presence (v7 exporter
+  // contract, msg 1289); a container that still has the U-Net form is refused.
+  if (wf.has("skip_connection_weights.value") ||
+      wf.has("blocks.0.residual_stream_coefficient.value") ||
+      wf.has("blocks.0.token_embedding_coefficient.value"))
+    die("TF_AR build: container has U-Net skip / residual / token coefficients (not replace-mode AttnRes)");
+  {
+    auto q192 = [&](const std::string& name, float* dst) {
+      const WTensor& w = wf.get(name, DT_F32, {static_cast<uint32_t>(D)});
+      std::memcpy(dst, w.f32(), sizeof(float) * D);
+    };
+    for (int l = 0; l < NL; l++) {
+      std::string b = "blocks." + std::to_string(l) + ".";
+      q192(b + "q_mix.w", ar_q_mix[l]);
+      q192(b + "q_mlp.w", ar_q_mlp[l]);
+    }
+    q192("blocks." + std::to_string(NL - 1) + ".q_final.w", ar_q_final);
+  }
+#else
   {
     const WTensor& sw = wf.get("skip_connection_weights.value", DT_F32, {NSKIP});
     for (int i = 0; i < NSKIP; i++) skip_w[i] = sw.f32()[i];
   }
+#endif
 
   int ki = 0, vi = 0;
   for (int l = 0; l < NL; l++) {
     std::string b = "blocks." + std::to_string(l) + ".";
+#if !TF_AR
     rsc[l] =
         wf.get(b + "residual_stream_coefficient.value", DT_F32, {1}).f32()[0];
     tec[l] =
         wf.get(b + "token_embedding_coefficient.value", DT_F32, {1}).f32()[0];
+#endif
     std::string a = b + "attention.";
 
     if (KIMI_L[l]) {
@@ -220,30 +258,61 @@ void OptModel::load(const char* weights_path) {
       VanArenas& L = van[vi];
       layer2van[l] = vi;
       L.qp = qsite(a + "query_projection", D, D, true);
-      L.kp = qsite(a + "key_projection", D, D, true);
-      L.vp = qsite(a + "value_projection", D, D, true);
+      L.kp = qsite(a + "key_projection", TF_KVH * DH, D, true);
+      L.vp = qsite(a + "value_projection", TF_KVH * DH, D, true);
       L.op = qsite(a + "output_projection", D, D, true);
       const WTensor& qs = wf.get(a + "quantize_queries.scale", DT_BF16, {NH});
-      const WTensor& ks = wf.get(a + "quantize_keys.scale", DT_BF16, {NH});
-      const WTensor& vs = wf.get(a + "quantize_values.scale", DT_BF16, {NH});
+      const WTensor& ks = wf.get(a + "quantize_keys.scale", DT_BF16, {TF_KVH});
+      const WTensor& vs = wf.get(a + "quantize_values.scale", DT_BF16, {TF_KVH});
       for (int h = 0; h < NH; h++) {
+        const int g = h % TF_KVH;   // GQA: every query head reads K/V head h % TF_KVH
         L.sq[h] = bf16_to_f32(qs.bf16_bits()[h]);
-        L.sk[h] = bf16_to_f32(ks.bf16_bits()[h]);
-        L.sv[h] = bf16_to_f32(vs.bf16_bits()[h]);
+        L.sk[h] = bf16_to_f32(ks.bf16_bits()[g]);
+        L.sv[h] = bf16_to_f32(vs.bf16_bits()[g]);
         L.coef[h] = 0.125f * L.sq[h] * L.sk[h];
       }
+#if TF_VE
+      {
+        const WTensor& vc = wf.get(a + "value_embedding_coefficients.value", DT_F32, {2});
+        L.ve_c0 = vc.f32()[0];
+        L.ve_c1 = vc.f32()[1];
+        const std::string vp = "value_embeddings." + std::to_string(vi) + ".inner";
+        const WTensor& q = wf.get(vp + ".weight.q", DT_I8, {static_cast<uint32_t>(V), static_cast<uint32_t>(TF_KVH * DH)});
+        const WTensor& sc = wf.get(vp + ".weight.scale", DT_BF16, {static_cast<uint32_t>(V)});
+        L.ve_store.assign(size_t(V) * TF_KVH * DH, 0.0f);
+        float* t = L.ve_store.data();
+        for (int r = 0; r < V; r++) {
+          const float f = bf16_to_f32(sc.bf16_bits()[r]);
+          for (int i = 0; i < TF_KVH * DH; i++)
+            t[size_t(r) * TF_KVH * DH + i] = static_cast<float>(q.i8()[size_t(r) * TF_KVH * DH + i]) * f;
+        }
+        L.ve = t;
+      }
+#endif
       vi++;
     }
 
     const int d_mlp = mlp_width(b);
     mlp[l].up = qsite(b + "mlp.up", d_mlp, D, true);
-    mlp[l].down = qsp4(b + "mlp.down", d_mlp, &mlp[l].down_s_act);
+    mlp[l].down = qsp4(b + "mlp.down", d_mlp, &mlp[l].down_s_act, &mlp[l].down8, &mlp[l].down_wide);
   }
   if (ki != OptModel::NKIMI || vi != OptModel::NVAN)
     die("layer pattern mismatch");
 
   unembed = qsite("unembedding", V, D, true);
   stream_bytes = round64(off);
+
+#if TF_PLM
+  // the prior head is signalled by its tensor; a TF_PLM build needs it.  (A
+  // build without TF_PLM does not look for it, so its binary stays identical.)
+  if (!wf.has("logit_mixing_head.weight"))
+    die("TF_PLM build, but the container has no logit_mixing_head.weight");
+  {
+    const WTensor& hw = wf.get("logit_mixing_head.weight", DT_F32,
+                               {1, static_cast<uint32_t>(D)});
+    std::memcpy(plm_w, hw.f32(), sizeof(float) * D);
+  }
+#endif
 
   // ---- non-stream data: tail slack gap, then the normed embedding table ----
   off += QMAT_TAIL_SLACK;

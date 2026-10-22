@@ -1,0 +1,4 @@
+2026-10-19T00:36:43 Y2_s1_e930_mfA START stages [fp32 export] gpus 0,1,2,3,4,5,6,7 snap 002bc3807fb3dad1 (epoch 64)
+2026-10-19T00:54:43 Y2_s1_e930_mfA fp32 (rx3a.py): STRICT DEPLOYED "bits_per_tok": 1.2696958705656336
+2026-10-19T00:59:03 Y2_s1_e930_mfA RESULT strict 1.2696958705656336 | C4 3649198 B sha d852e2f3af7fe349 | gate: tensors py 597 cpp 597, mismatches 0, name differences 0 | dS vs shipped -1510691 B = -1.575% S (1% line -959141) (planning A-vs-P fees not included)
+2026-10-19T00:59:03 Y2_s1_e930_mfA BRANCH DONE

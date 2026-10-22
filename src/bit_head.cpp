@@ -1018,6 +1018,40 @@ void Shutdown() {
   g_init_done = false;
 }
 
+
+// ---- research: BITLSTM trace writer (training/bitl/FORMAT.md, trace v3 + channel BAZ1)
+#include <cstdio>
+#include <cstdlib>
+#include <cstdint>
+#include <cstring>
+namespace bit_head_trace {
+static FILE* tr = nullptr;
+static FILE* ch = nullptr;
+static int inited = 0;
+static uint16_t pend_p = 0;
+static uint8_t pend_ov = 0;
+static float pend_m1 = 0.0f;
+static float pend_cols[13];
+static void Init() {
+  inited = 1;
+  const char* d = std::getenv("CMX_TRACE_DIR");
+  if (!d) return;
+  char path[4096];
+  std::snprintf(path, sizeof(path), "%s/trace.bin", d);
+  tr = std::fopen(path, "wb");
+  std::snprintf(path, sizeof(path), "%s/channel.bin", d);
+  ch = std::fopen(path, "wb");
+  if (!tr || !ch) { std::fprintf(stderr, "trace: cannot open files in %s\n", d); std::abort(); }
+  std::setvbuf(tr, nullptr, _IOFBF, 1 << 22);
+  std::setvbuf(ch, nullptr, _IOFBF, 1 << 22);
+  uint32_t h[5] = {0x4c544942u, 3u, 28u, 60u, 0u};
+  std::fwrite(h, 4, 5, tr);
+  uint64_t mask = 0x07e0007fULL;
+  std::fwrite(&mask, 8, 1, tr);
+  uint32_t c[7] = {0x315a4142u, 4u, 32u, 1u, 32u, 1u, 1u};
+  std::fwrite(c, 4, 7, ch);
+}
+}  // namespace bit_head_trace
 __attribute__((noinline))
 unsigned int Adjust(unsigned int base_p, const float* stage1, int n_stage1,
                     float m1raw, int override_active) {
@@ -1136,6 +1170,22 @@ unsigned int Adjust(unsigned int base_p, const float* stage1, int n_stage1,
     for (int r = 0; r < Head::nlhid; ++r) x[Head::kLhid + r] = 0.0f;
   }
 
+  if (__builtin_expect(!bit_head_trace::inited, 0)) bit_head_trace::Init();
+  if (bit_head_trace::tr) {
+    if ((s.i & 7ULL) == 0) {
+      float rec[69];
+      for (int k = 0; k < 4; ++k) rec[k] = (s.aux_tf && k < s.aux_n_tf) ? s.aux_tf[k] : 0.0f;
+      for (int r = 0; r < 32; ++r) rec[4 + r] = x[Head::kHid + r];
+      for (int r = 0; r < 32; ++r) rec[36 + r] = x[Head::kLhid + r];
+      rec[68] = s.aux_zone ? (float)(*s.aux_zone) : 0.0f;
+      std::fwrite(rec, 4, 69, bit_head_trace::ch);
+    }
+    bit_head_trace::pend_p = (uint16_t)base_p;
+    bit_head_trace::pend_ov = override_active ? 1 : 0;
+    bit_head_trace::pend_m1 = m1raw;
+    for (int k = 0; k < 13; ++k) bit_head_trace::pend_cols[k] = x[k];
+  }
+
   s.Forward();
 
   s.skip = override_active ? 1 : 0;
@@ -1160,6 +1210,15 @@ unsigned int Adjust(unsigned int base_p, const float* stage1, int n_stage1,
 __attribute__((noinline))
 void Observe(int bit) {
   Head& s = g_head;
+  if (bit_head_trace::tr) {
+    unsigned char rec[60];
+    std::memcpy(rec, &bit_head_trace::pend_p, 2);
+    rec[2] = (unsigned char)(bit_head_trace::pend_ov | (bit ? 2 : 0));
+    rec[3] = 0;
+    std::memcpy(rec + 4, &bit_head_trace::pend_m1, 4);
+    std::memcpy(rec + 8, bit_head_trace::pend_cols, 52);
+    std::fwrite(rec, 1, 60, bit_head_trace::tr);
+  }
   if (s.tbptt) {
     if (!s.frozen) {
       s.bdl[s.nbuf] = s.skip ? 0.0f

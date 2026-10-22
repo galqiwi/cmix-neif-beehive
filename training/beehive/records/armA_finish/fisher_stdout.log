@@ -1,0 +1,16 @@
+arch: {'attnres': {'mode': 'replace', 'block': 2, 'new_params': 6336}}
+loaded /home/user/work/y2p/runs/MF_parent/snap_e930/model.tch (strict=True) missing=0 unexpected=0
+fisher targets: 155 matrices, 9241392 params
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+dump loader: 172437 documents | 593115275 rows (547413565 stream, 45701710 inserted, 7153276 sentinel, 2901367 redirect page) | scored 547585951 (92.3237 %)
+dump loader: packing 37 carrier bits, X=2, edge mark 216, window 2048, redirmerge True, arms syn,alias,a2,a2n,sent,z3,x0row,redirmerge,aliasprompt,autor,meta,metavorn,metasent,rd,titelersatz2,subdedup,xdedup,tfonly,metaform3,frueh,redirfest,uid_erst,tsprog2,metakons,kapfrei1,aliastab1,kalblock1,c8tune1,leiter2_o25
+dump loader: longest document 131037 rows, micro-batch 131072 (truncation rule not needed), mind the position limit
+dump loader: position limit 131072, longest document 131037 rows, margin 35
+fisher batch 0/48
+fisher batch 8/48
+fisher batch 16/48
+fisher batch 24/48
+fisher batch 32/48
+fisher batch 40/48
+budget 1.000: R 0.9962 x, D 0.9999 x, fractions [0.004726210138483039, 2.5409731927328167e-05, 0.9952483801295896]

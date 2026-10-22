@@ -6,6 +6,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <malloc.h>
+#include <unistd.h>
+#include "cmx_exp.h"
+#include <ctime>
 
 #include "preprocess/preprocessor.h"
 #include "coder/encoder.h"
@@ -280,6 +283,7 @@ void Compress(unsigned long long input_bytes, std::ifstream* is,
         e.Encode((c>>j)&1);
       }
       }
+      cmx::M().Byte(c);
       if (!MetablockInert()) {
         metablock::mk.Byte(c);
         if (metablock::mk.Endet()) {
@@ -320,6 +324,30 @@ void Compress(unsigned long long input_bytes, std::ifstream* is,
         if (tn) timestamp_skip::Beginn();
         for (int k = 0; k < tn; ++k) e.ObserveKnownByte(tb[k]);
         timestamp_skip::Ende();
+      }
+      if (cmx::O().log_every && cmx::O().bytecost) {
+        static std::vector<float> cmx_bc;
+        static double cmx_prev = 0;
+        cmx_bc.push_back((float)(cmx::A().final_bits - cmx_prev));
+        cmx_prev = cmx::A().final_bits;
+        if (cmx::O().stop_at && pos + 1 >= (unsigned long long)cmx::O().stop_at) {
+          FILE* bf = fopen("bytecost.f32", "wb");
+          if (bf) { fwrite(cmx_bc.data(), sizeof(float), cmx_bc.size(), bf); fclose(bf); }
+        }
+      }
+      if (cmx::O().log_every && ((pos + 1) % (unsigned long long)cmx::O().log_every == 0
+                                 || (cmx::O().stop_at && pos + 1 >= (unsigned long long)cmx::O().stop_at))) {
+        static const time_t cmx_t0 = time(nullptr);
+        const cmx::Acct& a = cmx::A();
+        fprintf(stderr, "CMX %llu %zu %.1f %.1f %.1f %llu %ld\n", pos + 1, e.OutputSize(),
+                a.final_bits, a.pre_bits, a.tf_bits, a.nbits, (long)(time(nullptr) - cmx_t0));
+        fflush(stderr);
+        if (cmx::O().stop_at && pos + 1 >= (unsigned long long)cmx::O().stop_at) {
+          fprintf(stderr, "CMX stop at %llu\n", pos + 1);
+          fflush(stderr);
+          fflush(nullptr);
+          _exit(0);
+        }
       }
       if (--prog_left == 0) {
         prog_left = percent;
@@ -498,6 +526,11 @@ bool RunCompression(bool enable_preprocess, const std::string& input_path,
   }
 
   console_progress::PhaseEnd();   // "preprocessing enwik9" ends here
+  if (cmx::Allowed() && std::getenv("CMX_DUMP_STREAM")) {
+    std::ifstream si(temp_path, std::ios::binary);
+    std::ofstream so(std::getenv("CMX_DUMP_STREAM"), std::ios::binary);
+    so << si.rdbuf();
+  }
 
   std::ifstream temp_in(temp_path, std::ios::in | std::ios::binary);
   if (!temp_in.is_open()) return false;
@@ -516,6 +549,11 @@ bool RunCompression(bool enable_preprocess, const std::string& input_path,
   vocab_frozen::FillVocab(&vocab);
   WriteHeaderVocfix(temp_bytes, dictionary != NULL, &data_out);
 
+#ifdef CMX_FINAL
+  cmx::Main() = transformer::Active();   // final switches: main text stream only (not blob/aux), mirrored in RunDecompression
+#else
+  cmx::Main() = cmx::Allowed();   // research switches act from here on (top-level -e run only)
+#endif
   Predictor p(vocab);
   if (dictionary) console_progress::Phase("pretraining the model on the dictionary");
   if (enable_preprocess) preprocessor::Pretrain(&p, dictionary);
@@ -552,6 +590,9 @@ bool RunDecompression(const std::string& input_path,
   if (dictionary_used && dictionary == NULL) return false;
 
   {
+#ifdef CMX_FINAL
+    cmx::Main() = transformer::Active();   // mirrors RunCompression (g_aux is read from the header above)
+#endif
     Predictor p(vocab);
     if (dictionary) console_progress::Phase("pretraining the model on the dictionary");
     if (dictionary_used) preprocessor::Pretrain(&p, dictionary);
@@ -601,6 +642,7 @@ bool RunDecompression(const std::string& input_path,
 
 namespace ppmd_page { extern int hilfs; }
 int main(int argc, char** argv) {
+  if (argc > 1 && argv[1][0] == '-' && argv[1][1] == 'e') cmx::Allowed() = true;
   console_progress::Begin();
   if (argc > 1 && argv[1][0] == '-' && (argv[1][1] == 'c' || argv[1][1] == 'd'
       || argv[1][1] == 'C' || argv[1][1] == 'D'))

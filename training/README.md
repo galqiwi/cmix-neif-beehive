@@ -24,6 +24,10 @@ third-party files listed in `../third_party/README.md` (copies in
 `tf/tree_upstream/cpp_infer/` and in `bitl/trainer/bit_head.cpp`) and the
 Wikipedia excerpts in `tf/tree_upstream/prof_input/`.
 
+Sections 0 to 11 describe the cmix-neif-1.0 pipeline and its weights. The
+transformer that cmix-neif-beehive ships was trained on top of that pipeline
+with the tools in `beehive/`; section 12 describes it.
+
 ---
 
 ## 0. The short version
@@ -589,3 +593,147 @@ environment variables and stop if the variable is unset. The scripts of
 * `tf/1_dump`, `tf/2_package`, `tf/3_train`, `tf/4_export`: the stages.
 * `bitl/`: the BITLSTM.
 * `data/`: dictionary, hints, article order, PGO profile.
+* `beehive/`: the transformer of cmix-neif-beehive (section 12).
+
+## 12. The transformer of cmix-neif-beehive (`beehive/`)
+
+`beehive/` holds the complete training code, configurations, reproduction script, exporter and run records for
+the transformer weights this tree ships (`weights-poc8m_w2048_p15f_v3bf16_gestrichen_v4.c4`, 3,649,198 B, sha256
+`141ee13c…`). Like the rest of this directory it is not part of the entry: `build.sh` never enters it.
+
+It builds on the cmix-neif-1.0 pipeline of sections 1 to 6 (unchanged in this tree): the same coder stream, the
+same training package ("package D"), the same trainer tree (fx2-cmix-transformer + cmix-neif overlay). What is new
+is the model (AttnRes + per-token PPMd-prior head), the bf16 run that trains it from scratch, a short
+quantization-aware finish with a rate (container size) term, and an exporter for the new tensors.
+
+### 12.0 The short version
+
+```
+package D (stages a-c, sections 2-4, unchanged)
+  |
+  v phase1   bf16 from random init (seed 1), model geometry,  2000-epoch LR plan,       tree/rx7q.py      8 GPUs
+  |          stopped at epoch 930 (the plan, not the stop, sets the LR schedule)       cfg/phase1_bf16.json
+  v fisher   Fisher row allocation, 2/3/4-bit ("NARROW"), budget 1.00                    tree/fisher_alloc_a.py
+  v init     QAT init: activation scales (256 batches), Muon/AdamW moments carried,      tree/rx7r.py init_only
+  |          fake-quant (int4/int8) and the C1 rate term set up
+  v qat      64 epochs (37,856 updates), cosine LR 1 -> 0.025x, C1 on every update      tree/rx7r.py      8 GPUs
+  v fp32     1 epoch at lr 3e-6, strict deployed eval                                    tree/rx3a.py      8 GPUs
+  v export   attention window 1536, bf16 rounding, container v3 -> v4, C++/python gate   export/
+  v install  container into the tree, FNV-1a-64 fingerprint into src/transformer.h       then: bash build.sh
+weights-..._v4.c4  3,649,198 B  sha256 141ee13c316811157bea167846b3f45472affff7adaa1b8b263e30621e490885
+```
+
+The paths `tree/`, `cfg/`, `export/`, `scripts/` and `records/` in this section are relative to `beehive/`. One
+command runs all of it (each stage resumes / is skipped when its output exists):
+
+```bash
+WORK=/scratch/beehive PKG=/data/pkg_D TFT_TREE=/work/tft bash training/beehive/scripts/reproduce.sh
+bash build.sh        # in an empty directory, as in ../README.md section 4
+```
+
+Results of the shipped run (`records/`): strict deployed cross-entropy **1.27404 bits/token at window 1536**
+(cmix-neif-1.0: 1.2915), container **3,649,198 B** (cmix-neif-1.0: 3,716,667 B). Measured on the full file:
+`archive9` 90,763,792 B, **S = 94,705,591 B = -1.260 %** against 95,914,051 B (../README.md section 1).
+
+### 12.1 Model
+
+The model is the cmix-neif `poc8m_w2048` transformer (16 layers, d_model 192, byte vocabulary 208, KDA layers,
+package-D input form) with these changes (config `overrides` + `arch`, identical in every cfg here):
+
+| change | config | code |
+|---|---|---|
+| one key/value head (GQA 3:1) | `n_key_value_heads: 1` | upstream option |
+| value embeddings on layers 3, 7, 11, 15 | `value_embedding_pattern`, `ve_sentinel: "clamp"` | upstream option + rx3 |
+| MLP width 1024 | `d_mlp: 1024` | upstream option |
+| per-token PPMd-prior logit mixing head | `prior_logit_mixing: true` | upstream option |
+| AttnRes, replace mode, block 2 (depth-mixing of block outputs replaces skip / token re-injection) | `arch.attnres {mode: replace, block: 2, impl: fused}`, `skip_connections: false`, `token_embedding_connections: false` | `arch.py`, `attnres_v10.py` (fused op), `attnres_hub.py` |
+
+The C++ engine in `src/tf1/opt/` implements exactly this forward pass (../README.md section 3.2); the gate of
+stage `export` checks the container against the engine's own loader.
+
+### 12.2 Files
+
+```
+tree/          the training scripts; they run ON TOP OF the trainer tree of section 1 (TFT_TREE),
+               which is used unchanged (verified: the development hosts' tree is byte-identical to tree_upstream +
+               tree_overlay + patch_paket11.py)
+  rx3.py         model/loader setup, mixed-precision install, strict deployed eval (shared by all)     021e3965
+  rx3a.py        rx3 + AttnRes install; fp32 phase and evals                                           333c3dfd
+  rx7q.py        resumable bf16 / QAT runner (phase 1)                                                 b28ab930
+  rx7r.py        rx7q + init_only, cosine_exact, keep_epochs, probe (QAT finish)                       9696be34
+  arch.py        AttnRes architecture install                                                          0ad1daaa
+  attnres_v10.py fused AttnRes custom op (bit-identical to the reference path)                         37465386
+  attnres_hub.py optional hub mode (not used by this model; imported by arch.py)                        a13677f7
+  fakequant.py   fake-quant forward for QAT (int4 weight rows from the allocation, int8 activations)   36dd253c
+  fastmuon.py    batched-by-shape Muon (same algorithm as upstream, opt.pt-compatible)                 f3b8ef44
+  fisher_alloc_a.py  Fisher information per weight row -> 2/3/4-bit allocation at a size budget        dc805e96
+  c1_rate_v2.py  C1 rate term: differentiable estimate of the container bits of every quantized row,   e5149103
+                 lambda 2.7e-9 (mean nats per weight bit), tau 0.25, export rules of the real exporter
+  speedpatch.py  throughput patch (KDA no-recompute, fla outside dynamo); outputs bit-identical          0fe5cc50
+  exp.env        training-form environment of package D (= tf/3_train/chain/08_w2048.env, data path $PKG)
+cfg/           phase1_bf16.json, fisher.json, qat.json (init + qat), fp32.json; paths are filled in by the script
+scripts/reproduce.sh   the pipeline above
+export/        export_v3_ar.py (checkpoint -> reference weight file, AttnRes + prior-head tensors), export4/ (bf16
+               rounding, container v3, dead-neuron pruning, container v4; = tf/4_export plus two changes:
+               wpack2_bf16.py rounds the AttnRes/head tensors like the other raw classes, and weights_compress_v3.py
+               adds the mixed-precision row encoding (row class 2/3/4-bit + zero-row flag, enabled by WC_INT5M=1) that
+               src/tf1/weights_io_compressed.cpp decodes), gate/ (C++ digest with the engine loader vs python decode)
+records/       what was actually run: configs, logs, checksums of every intermediate (SHA256_ARTEFACTS.txt), the
+               executed driver scripts (host paths as they were), the full-file encode log
+```
+
+### 12.3 Hardware and time (shipped run)
+
+| stage | hardware | wall time |
+|---|---|---|
+| phase1 (to epoch 930) | 8 x NVIDIA RTX PRO 6000 Blackwell (96 GB), micro batch 131,072 tokens, accumulation 1, optimizer batch 1,048,576 tokens | ~155 s per epoch, ~40 h to epoch 930 |
+| fisher | 1 GPU | ~2 min |
+| init + qat (64 epochs) | 8 GPUs, same layout | 4 h 17 min |
+| fp32 + strict eval | 8 GPUs | 18 min |
+| export + gate | 1 GPU / CPU | ~4 min |
+
+Software: Python 3.11.15, torch 2.12.1+cu130, triton 3.7.1, fla 0.5.1, numpy 2.4.6 (the upstream lock file);
+gate: clang++ 18 or g++ with AVX2/FMA.
+
+### 12.4 Recipe details
+
+* **phase1** (`cfg/phase1_bf16.json`): `epochs: 2000` defines the one LR plan (the earlier development schedule)
+  and the loader permutations; `stop_at: 930` only stops the run. The shipped run was a single uninterrupted launch
+  planned to stop at epoch 1344 (records/phase1/launcher.log); the parent of the shipped weights is its epoch-930
+  state (records/phase1/state_e930.json, step 550,082). Evals every 100 epochs: e900 and e1000 bracket the parent
+  (records/phase1/stdout.0.log).
+* **fisher** (`cfg/fisher.json`): 48 batches of squared gradients per weight row; levels [1, 3, 7] (2, 3, 4 bits);
+  budget 1.00 of the uniform-4-bit size. Result: 99.52 % 4-bit rows, 0.47 % 2-bit, 0.0025 % 3-bit
+  (records/armA_finish/alloc_summary.json).
+* **init + qat** (`cfg/qat.json`): init from the E930 model with `init_opt` (Muon/AdamW moments carried by
+  parameter name; 277 carried, 315 new), 256 activation-scale batches, fake-quant on, FastMuon, `compile_qat: false`;
+  C1 (`rate_term`, module c1_rate_v2) from update 0 with the exporter's topology rules (id7 rows forced, rows below
+  2^-20 zeroed, dead MLP neurons pruned); `cosine_exact` LR multiplier 1.0 -> 0.025 over the 37,856 updates.
+  A matched finish with C1 on the last 21 epochs only, from the same parent, gave a lower cross-entropy but a
+  container 725,709 B larger, and lost on the S proxy (+590,668 B).
+* **fp32** (`cfg/fp32.json`): 1 epoch, lr 3e-6, no warm-up, final multiplier 1e-8, then the strict deployed eval
+  (the quantized model exactly as the engine runs it).
+* **export**: `overrides.window_size = 1536` (the engine's attention window, `ATTN_WIN` in src/tf1/opt/attn.h and
+  `config.ints[6]` of the container), then the four export4 steps and the gate.
+
+### 12.5 Determinism: what reruns bit-exactly
+
+* From `fp32/model.tch` on: deterministic. Re-running stage `export` with the packaged tools on the shipped fp32 model
+  reproduced the container byte for byte (`141ee13c…`, gate 597/597 tensors, 0 mismatches; 2026-10-21), and
+  `install` + `build.sh` give `comp9` sha256 `db2ddfb9…` (../README.md section 4).
+* The GPU stages (phase1, init, qat, fp32) reproduce the recipe, not the bits: torch.save bytes and GPU reduction
+  order depend on hardware, GPU count and library versions. Use 8 GPUs with the layout above to stay closest. The
+  strict eval itself varies by ~1e-6 between runs (W1536: 1.2740351 on 2026-10-19, 1.2740348 on 2026-10-21).
+* records/SHA256_ARTEFACTS.txt lists the shipped run's checksum at every stage.
+
+### 12.6 Provenance and attribution
+
+Phase 1 was run by agent v3 (canonical run, Oct 17-19 2026); the matched-finish experiment that produced the
+shipped weights (64-epoch QAT with C1 on all epochs vs on the last 21; the first won) by agent v6 (Oct 18-19);
+exporter AttnRes/head support by v7, fused AttnRes / FastMuon / C1 underflow guard by v10 and v6; release build and
+verification by v10, v6, v11, v3. The model code descends from Vladimir Ivanov's fx2-cmix-transformer and the
+cmix-neif-1.0 training tree (`ATTRIBUTION.md`). `records/` are kept as produced (absolute host paths, development
+run names; notification-client settings redacted); `records/scripts_executed/` are the driver scripts as run, and
+`scripts/reproduce.sh` performs the same steps with the configurations of `cfg/` (mf2_prep.sh is the same
+preparation applied to another parent; the shipped preparation used the identical commands on the E930 parent, see
+records/armA_finish/*_cfg.json). Everything here is GPL-3 like the rest of the entry.

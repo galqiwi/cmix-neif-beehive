@@ -6,7 +6,7 @@
 # artefacts, named by location and, where recorded, checksum.
 path	origin	sha256	size	purpose
 ATTRIBUTION.md	this entry	cace844a2fb39b75855f3b5fff5a3a6ae14abb5be87d3d6fe9cedddebe46c1bb	35846	authorship, licences, upstream URLs and commits
-README.md	this entry	eed58a9080b72322970114bd4e7f1e728eae81fefbb8794fc32b70c01460593b	33331	master guide
+README.md	this entry	34618c4f6cf92ace0bec76c12a628835b1ac24a9ae09d0ed057d0e3ed37a272d	44266	master guide
 bitl/FORMAT.md	this entry	03b84e1213e438398646714c3bc76cc2e5723a4fc414b8967036d9bcbfdd3a55	4352	BITLSTM training tools
 bitl/README.md	this entry	20ede83a6c9337b73f779e3ef6354a7c33dcce4c272ce06cdf69d26122d4882f	9331	BITLSTM training tools
 bitl/record/F2L_BITS	this entry	93b543419d5ee5f1c3be8e3ea157c822909d59095ca863c2ec6e8145db2c871a	10	record of the BITLSTM training of the shipped weights

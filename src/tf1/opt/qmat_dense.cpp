@@ -35,8 +35,9 @@ struct IdxLut {
 };
 const IdxLut g_idxlut;
 
-// default software-prefetch lines per 256 B chunk iteration (distance 2 KB,
-// MACHINE.md section 2: +2-6% at L3). 4 lines/chunk = ~full coverage.
+// default software-prefetch lines per 256 B chunk iteration, distance 6 KB
+// (-4..-6% engine time on an EPYC 7R13 vs the former 2 KB, README.md
+// section 3.4). 4 lines/chunk = ~full coverage.
 constexpr int PFN_DEFAULT = 4;
 
 // ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ inline void run_g8(const QDense& m, const uint8_t* act, Epi& epi) {
     __m256i s6 = _mm256_maddubs_epi16(av, w[6]);
     __m256i s7 = _mm256_maddubs_epi16(av, w[7]);
     for (int k = 0; k < PFN; k++)
-      _mm_prefetch(reinterpret_cast<const char*>(gp) + 2048 + 64 * k,
+      _mm_prefetch(reinterpret_cast<const char*>(gp) + 6144 + 64 * k,
                    _MM_HINT_T0);
     // keep the chunk loop rolled: full unroll makes clang spill 3 of the 8
     // int16 accumulators (measured slower); the rolled body is load-balanced
@@ -110,7 +111,7 @@ inline void run_g8(const QDense& m, const uint8_t* act, Epi& epi) {
     for (int c = 1; c < NC; c++) {
       const __m256i* wc = w + c * 8;
       for (int k = 0; k < PFN; k++)
-        _mm_prefetch(reinterpret_cast<const char*>(gp) + c * 256 + 2048 +
+        _mm_prefetch(reinterpret_cast<const char*>(gp) + c * 256 + 6144 +
                          64 * k,
                      _MM_HINT_T0);
       av = _mm256_load_si256(
@@ -164,10 +165,10 @@ inline void run_g4_768(const QDense& m, const uint8_t* act, Epi& epi) {
       __m256i s3 = _mm256_maddubs_epi16(av, wb[3]);
       for (int c = 1; c < 8; c++) {
         if (PFN) {
-          _mm_prefetch(reinterpret_cast<const char*>(wb) + c * 128 + 2048,
+          _mm_prefetch(reinterpret_cast<const char*>(wb) + c * 128 + 6144,
                        _MM_HINT_T0);
           if (PFN > 1)
-            _mm_prefetch(reinterpret_cast<const char*>(wb) + c * 128 + 2112,
+            _mm_prefetch(reinterpret_cast<const char*>(wb) + c * 128 + 6208,
                          _MM_HINT_T0);
         }
         av = _mm256_load_si256(reinterpret_cast<const __m256i*>(ab + 32 * c));
@@ -191,8 +192,107 @@ inline void run_g4_768(const QDense& m, const uint8_t* act, Epi& epi) {
   }
 }
 
+#ifdef TF_W5
+// research: |w| <= 15 -> a maddubs lane holds <= 2*255*15 = 7650, so at most
+// 4 chunks may be summed in int16 (30600 < 32767); widen to int32 every 4
+// chunks.  Same results as the int32 dot product, like the narrow kernels.
+template <int NC, int CH, class Epi>
+inline void run_g8_wide(const QDense& m, const uint8_t* act, Epi& epi) {
+  const __m256i ones = _mm256_set1_epi16(1);
+  const uint8_t* gp = m.arena;
+  constexpr ptrdiff_t GB = 64 + NC * 256;
+  const int ng = m.ngroups;
+  for (int g = 0; g < ng; g++, gp += GB) {
+    const __m256i* w = reinterpret_cast<const __m256i*>(gp + 64);
+    __m256i d[8];
+    for (int r = 0; r < 8; r++) d[r] = _mm256_setzero_si256();
+    for (int c0 = 0; c0 < NC; c0 += CH) {
+      __m256i s[8];
+      for (int r = 0; r < 8; r++) s[r] = _mm256_setzero_si256();
+      const int c1 = c0 + CH < NC ? c0 + CH : NC;
+      for (int c = c0; c < c1; c++) {
+        const __m256i av = _mm256_load_si256(reinterpret_cast<const __m256i*>(act + 32 * c));
+        const __m256i* wc = w + c * 8;
+        for (int r = 0; r < 8; r++) s[r] = _mm256_add_epi16(s[r], _mm256_maddubs_epi16(av, wc[r]));
+      }
+      for (int r = 0; r < 8; r++) d[r] = _mm256_add_epi32(d[r], _mm256_madd_epi16(s[r], ones));
+    }
+    __m256i p01 = _mm256_hadd_epi32(d[0], d[1]);
+    __m256i p23 = _mm256_hadd_epi32(d[2], d[3]);
+    __m256i p45 = _mm256_hadd_epi32(d[4], d[5]);
+    __m256i p67 = _mm256_hadd_epi32(d[6], d[7]);
+    __m256i q0 = _mm256_hadd_epi32(p01, p23);
+    __m256i q1 = _mm256_hadd_epi32(p45, p67);
+    __m256i sums = _mm256_add_epi32(_mm256_permute2x128_si256(q0, q1, 0x20),
+                                    _mm256_permute2x128_si256(q0, q1, 0x31));
+    sums = _mm256_sub_epi32(
+        sums, _mm256_load_si256(reinterpret_cast<const __m256i*>(gp)));
+    epi(g, sums, reinterpret_cast<const float*>(gp + 32));
+  }
+}
+
+template <int CH, class Epi>
+inline void run_g4_768_wide(const QDense& m, const uint8_t* act, Epi& epi) {
+  const __m256i ones = _mm256_set1_epi16(1);
+  const uint8_t* gp = m.arena;
+  constexpr ptrdiff_t GB = 32 + 24 * 128;  // 3104
+  const int ng = m.ngroups;
+  for (int g = 0; g < ng; g++, gp += GB) {
+    const __m256i* w = reinterpret_cast<const __m256i*>(gp + 32);
+    __m256i d0 = _mm256_setzero_si256(), d1 = d0, d2 = d0, d3 = d0;
+    for (int b = 0; b < 24 / CH; b++) {
+      const __m256i* wb = w + b * 4 * CH;
+      const uint8_t* ab = act + b * 32 * CH;
+      __m256i av = _mm256_load_si256(reinterpret_cast<const __m256i*>(ab));
+      __m256i s0 = _mm256_maddubs_epi16(av, wb[0]);
+      __m256i s1 = _mm256_maddubs_epi16(av, wb[1]);
+      __m256i s2 = _mm256_maddubs_epi16(av, wb[2]);
+      __m256i s3 = _mm256_maddubs_epi16(av, wb[3]);
+      for (int c = 1; c < CH; c++) {
+        av = _mm256_load_si256(reinterpret_cast<const __m256i*>(ab + 32 * c));
+        s0 = _mm256_add_epi16(s0, _mm256_maddubs_epi16(av, wb[c * 4 + 0]));
+        s1 = _mm256_add_epi16(s1, _mm256_maddubs_epi16(av, wb[c * 4 + 1]));
+        s2 = _mm256_add_epi16(s2, _mm256_maddubs_epi16(av, wb[c * 4 + 2]));
+        s3 = _mm256_add_epi16(s3, _mm256_maddubs_epi16(av, wb[c * 4 + 3]));
+      }
+      d0 = _mm256_add_epi32(d0, _mm256_madd_epi16(s0, ones));
+      d1 = _mm256_add_epi32(d1, _mm256_madd_epi16(s1, ones));
+      d2 = _mm256_add_epi32(d2, _mm256_madd_epi16(s2, ones));
+      d3 = _mm256_add_epi32(d3, _mm256_madd_epi16(s3, ones));
+    }
+    __m256i h = _mm256_hadd_epi32(_mm256_hadd_epi32(d0, d1),
+                                  _mm256_hadd_epi32(d2, d3));
+    __m128i sums = _mm_add_epi32(_mm256_castsi256_si128(h),
+                                 _mm256_extracti128_si256(h, 1));
+    sums = _mm_sub_epi32(
+        sums, _mm_load_si128(reinterpret_cast<const __m128i*>(gp)));
+    epi.g4(g, sums, reinterpret_cast<const float*>(gp + 16));
+  }
+}
+#endif
+
 template <int PFN, class Epi>
 inline void dispatch(const QDense& m, const uint8_t* act, Epi& epi) {
+#ifdef TF_W5
+  if (m.wide == 1) {
+    switch (m.d_in) {
+      case 64: run_g8_wide<2, 4>(m, act, epi); return;
+      case 192: run_g8_wide<6, 4>(m, act, epi); return;
+      case 205: case 208: case 224: run_g8_wide<7, 4>(m, act, epi); return;
+      case 768: run_g4_768_wide<4>(m, act, epi); return;
+      default: die("unsupported d_in");
+    }
+  }
+  if (m.wide == 2) {  // |w| <= 31: 2 chunks per int16 flush (2 * 2*255*31 = 31620)
+    switch (m.d_in) {
+      case 64: run_g8_wide<2, 2>(m, act, epi); return;
+      case 192: run_g8_wide<6, 2>(m, act, epi); return;
+      case 205: case 208: case 224: run_g8_wide<7, 2>(m, act, epi); return;
+      case 768: run_g4_768_wide<2>(m, act, epi); return;
+      default: die("unsupported d_in");
+    }
+  }
+#endif
   switch (m.d_in) {
     case 64:
       run_g8<2, PFN>(m, act, epi);
@@ -236,7 +336,7 @@ inline void run_packed(const QPacked& m, const int8_t* act, int32_t corr7,
       __m256i s0 = _mm256_setzero_si256(), s1 = s0, s2 = s0, s3 = s0;
       for (int p = 0; p < np; p++) {
         if (p == 0)
-          _mm_prefetch(reinterpret_cast<const char*>(gp) + b * 512 + 2048,
+          _mm_prefetch(reinterpret_cast<const char*>(gp) + b * 512 + 6144,
                        _MM_HINT_T0);
         const int pp = b * 4 + p;
         __m256i a0 = _mm256_load_si256(
@@ -319,9 +419,12 @@ void qgemv_add(const QDense& m, const uint8_t* act, float* out) {
 int qgemv_relu2q(const QDense& m, const uint8_t* act, float s_next,
                  uint8_t* q_out, uint16_t* idx_out) {
   if (m.d_in != 192) die("relu2q epilogue requires d_in==192");
-  if (m.rows_padded > 768) die("relu2q epilogue requires d_out<=768");
-  alignas(64) float y[768];
+  if (m.rows_padded > 1536) die("relu2q epilogue requires d_out<=1536");   // research: d_mlp up to 1536 (TF_DMLP)
+  alignas(64) float y[1536];
   EpiF32 e{y};
+#ifdef TF_W5
+  if (m.wide == 1) run_g8_wide<6, 4>(m, act, e); else if (m.wide == 2) run_g8_wide<6, 2>(m, act, e); else
+#endif
   run_g8<6, PFN_DEFAULT>(m, act, e);
   // phase 2a: relu^2 + quantize, two groups (16 outputs) per iteration
   const __m256 vs = _mm256_set1_ps(s_next);
@@ -379,9 +482,12 @@ int qgemv_relu2q(const QDense& m, const uint8_t* act, float s_next,
 void qgemv_quant_bias(const QDense& m, const uint8_t* act, float s_next,
                       uint8_t* q_out) {
   if (m.d_in != 192) die("quant_bias epilogue requires d_in==192");
-  if (m.rows_padded > 768) die("quant_bias epilogue requires d_out<=768");
-  alignas(64) float y[768];
+  if (m.rows_padded > 1536) die("quant_bias epilogue requires d_out<=1536");
+  alignas(64) float y[1536];
   EpiF32 e{y};
+#ifdef TF_W5
+  if (m.wide == 1) run_g8_wide<6, 4>(m, act, e); else if (m.wide == 2) run_g8_wide<6, 2>(m, act, e); else
+#endif
   run_g8<6, PFN_DEFAULT>(m, act, e);
   const __m256 vs = _mm256_set1_ps(s_next);
   const __m256 vlo = _mm256_set1_ps(-128.0f);
@@ -463,7 +569,13 @@ COLD_SIZE_ATTR QDense qdense_build(uint8_t* dst, const int8_t* qw, const float* 
           int8_t v = 0;
           if (row < d_out && col < d_in) {
             v = qw[static_cast<size_t>(row) * d_in + col];
+#ifdef TF_W5
+            if (v < -31 || v > 31) die("weight out of [-31,31]");
+            if ((v < -15 || v > 15) && m.wide < 2) m.wide = 2;
+            else if ((v < -7 || v > 7) && m.wide < 1) m.wide = 1;
+#else
             if (v < -7 || v > 7) die("weight out of [-7,7]");
+#endif
           }
           *w++ = v;
         }
@@ -481,7 +593,11 @@ QSparse qsparse_build(int8_t* dst_cols, float* dst_fold, const int8_t* qw,
   for (int c = 0; c < d_in; c++)
     for (int r = 0; r < 192; r++) {
       int8_t v = qw[static_cast<size_t>(r) * d_in + c];
+#ifdef TF_W5
+      if (v < -31 || v > 31) die("weight out of [-31,31]");
+#else
       if (v < -7 || v > 7) die("weight out of [-7,7]");
+#endif
       dst_cols[static_cast<size_t>(c) * 192 + r] = v;
     }
   std::memcpy(dst_fold, fold, sizeof(float) * 192);

@@ -1,0 +1,8 @@
+enc exit 0
+-rw-r----- 1 user user 1962065 Oct 19 01:47 out16
+dec exit 0
+RT_IDENTICAL
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 30:55.79
+	Maximum resident set size (kbytes): 7253592
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 30:40.69
+	Maximum resident set size (kbytes): 7256576

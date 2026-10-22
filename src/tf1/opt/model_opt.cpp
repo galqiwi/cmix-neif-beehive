@@ -29,6 +29,12 @@
 #include <vector>
 
 #include "arena_build.h"
+#if TF_AR
+#include "attnres_mix.h"
+#if TF_ARV2 || TF_AR_COSTDIAG >= 3
+#include "attnres_mix_v2.h"   // v10 runtime rework (FMA dots/mix, one exp, cached partial rstd)
+#endif
+#endif
 #include "attn.h"
 #include "glue.h"
 #include "kda.h"
@@ -49,7 +55,7 @@ namespace opt {
 
 namespace {
 constexpr int V = 208, D = 192, NL = 16, DH = 64, NH = 3,
-              DMLP = 768;
+              DMLP = TF_DMLP;
 constexpr int NKIMI = 12, NVAN = 4,
               NSKIP = 8;
 
@@ -235,6 +241,11 @@ void prof_print(double tsc_to_core, long tokens) {
 // ---------------------------------------------------------------------------
 // the model
 // ---------------------------------------------------------------------------
+#if TF_AR
+#define TF_ACC acc
+#else
+#define TF_ACC x
+#endif
 struct TransformerOptImpl {
   OptModel M;
   AttnKind kind;
@@ -265,6 +276,203 @@ struct TransformerOptImpl {
   // per-token skip stack (written by layers 0..5, read by 6..11 of the SAME
   // token) - transient within step
   alignas(64) float skip_store[NSKIP][D] = {};
+
+#if TF_AR
+  // Sub-layer output target (TF_ACC): ar_f in AttnRes replace mode, where the
+  // sub-layer reads its input from x (= the depth-mixed h) but its output must
+  // stay separate (partial sums); the residual stream x itself in the shipped
+  // form (TF_ACC = x, so that build is byte-identical to the original).
+  float* acc = x;
+  // ---- AttnRes replace mode (v7 arch.py replace-B2, v7_AR_FORWARD_SPEC.md) ----
+  // sources of a read: x0, the completed block sums (fixed once complete, their
+  // 1/rms cached), and the running partial sum of the current block.
+  static constexpr int ARB = TF_AR;
+  static constexpr int AR_MAXC = NL / ARB + 1;    // x0 + completed block sums
+  alignas(64) float ar_src[AR_MAXC][D] = {};
+  float ar_rstd[AR_MAXC] = {};
+  int ar_n = 0;
+  alignas(64) float ar_part[D] = {};
+#if TF_ARV2
+  float ar_part_rstd = 0.0f;   // TF_ARV2: 1/rms of ar_part, kept current by ar_take_f
+#endif
+#if TF_ARV2 >= 5
+  // TF_ARV2=5: ONLINE softmax per future read q over the COMPLETED sources (x0 + frozen block sums), maintained at push
+  // time: M_q = max logit, Z_q = sum exp(l - M_q), A_q = sum exp(l - M_q) v. A read then only adds the partial:
+  // m = max(M_q, l_p); a = exp(M_q - m), b = exp(l_p - m); out = (a A_q + b part) / (a Z_q + b).
+  // Same function as the direct softmax (reassociated, deterministic); the read's chain is one dot + one exp + a mix.
+  alignas(64) float ar_qA[2 * NL + 1][D] = {};
+  float ar_qM[2 * NL + 1] = {}, ar_qZ[2 * NL + 1] = {};
+#endif
+#if TF_ARV2 >= 5
+  // read index q: 2l = mixer read of layer l, 2l+1 = its MLP read, 2*NL = the final read
+  static constexpr int AR_NQ = 2 * NL + 1;
+  const float* ar_qw(int q) const {
+    return q == 2 * NL ? M.ar_q_final : ((q & 1) ? M.ar_q_mlp[q >> 1] : M.ar_q_mix[q >> 1]);
+  }
+  int ar_qnext = 0;            // first read index that has not happened yet
+  float ar_part_dot = 0.0f;    // dot(w_q, ar_part) for read q == ar_part_dot_q, fused into ar_take_f
+  int ar_part_dot_q = -1;
+#endif
+  bool ar_has_part = false;
+  alignas(64) float ar_f[D] = {};
+#if TF_AR_COSTDIAG >= 2
+  alignas(64) float ar_diag_scratch[D] = {};
+  float ar_diag_sum = 0.0f;
+  ~TransformerOptImpl() { if (ar_diag_sum == 1.2345f) std::printf("."); }   // keeps the scratch work observable
+#endif
+
+  void ar_push(const float* v) {
+    std::memcpy(ar_src[ar_n], v, sizeof(float) * D);
+#if TF_ARV2
+    // the partial's rstd is already current; any other source (x0) gets it computed once here
+    ar_rstd[ar_n] = (v == ar_part && ar_has_part) ? ar_part_rstd : ar_rstd192_v2(v);
+#if TF_ARV2 >= 5
+    {
+      const float* sv = ar_src[ar_n];
+      const float rsj = ar_rstd[ar_n];
+      if (ar_n == 0) {
+        // first source: M = l, Z = 1, A = x0 kept LAZY (A_q == ar_src[0] until the first block sum arrives)
+        for (int q = ar_qnext; q < AR_NQ; q++) {
+          ar_qM[q] = ar_dot192_v2(ar_qw(q), sv) * rsj;
+          ar_qZ[q] = 1.0f;
+        }
+      } else {
+        // all remaining reads: logits first, then the two exps 8 reads at a time, then the A updates
+        alignas(32) float ea[2 * NL + 8], eb[2 * NL + 8];
+        const int q0 = ar_qnext, nq = AR_NQ - q0;
+        for (int k = 0; k < nq; k++) {
+          const int q = q0 + k;
+          const float l = ar_dot192_v2(ar_qw(q), sv) * rsj;
+          const float m2 = l > ar_qM[q] ? l : ar_qM[q];
+          ea[k] = ar_qM[q] - m2;                              // old-sum scale exponent (<= 0)
+          eb[k] = l - m2;                                     // new-source exponent (<= 0)
+          ar_qM[q] = m2;
+        }
+        for (int k = nq; k < ((nq + 7) & ~7); k++) ea[k] = eb[k] = 0.0f;
+        for (int k = 0; k < nq; k += 8) {
+          _mm256_store_ps(ea + k, exp256_ps(_mm256_load_ps(ea + k)));
+          _mm256_store_ps(eb + k, exp256_ps(_mm256_load_ps(eb + k)));
+        }
+        for (int k = 0; k < nq; k++) {
+          const int q = q0 + k;
+          const float* Aold = ar_n == 1 ? ar_src[0] : ar_qA[q];   // lazy x0
+          float* Aq = ar_qA[q];
+          const __m256 va = _mm256_set1_ps(ea[k]), vb = _mm256_set1_ps(eb[k]);
+          for (int d = 0; d < D; d += 8)
+            _mm256_store_ps(Aq + d, _mm256_fmadd_ps(vb, _mm256_load_ps(sv + d), _mm256_mul_ps(va, _mm256_load_ps(Aold + d))));
+          ar_qZ[q] = ea[k] * ar_qZ[q] + eb[k];
+        }
+      }
+    }
+#endif
+#else
+    ar_rstd[ar_n] = ar_rstd192(v);
+#endif
+    ar_n++;
+  }
+  // x = depth_mix(x0, completed block sums, partial; w)   (attnres_mix.h)
+  void ar_read(const float* w) {
+#if TF_AR_COSTDIAG
+    // DIAGNOSTIC ONLY (never a real build): the read degenerates to a copy of the newest source. COSTDIAG=2 also
+    // computes the real v1 depth mix into a scratch row (kept alive by a checksum) before copying, so 2-vs-1 have
+    // IDENTICAL activations and downstream work (v5 1631: MLP-down sparsity depends on activations) and their paired
+    // wall difference is the depth-mix compute alone.
+#if TF_AR_COSTDIAG >= 2
+    {
+      const float* src2[AR_MAXC + 1];
+      float rs2[AR_MAXC + 1];
+      int n2 = 0;
+      for (int i = 0; i < ar_n; i++) { src2[n2] = ar_src[i]; rs2[n2++] = ar_rstd[i]; }
+#if TF_AR_COSTDIAG >= 3
+      // COSTDIAG=3: the v2 mix (FMA dots/mix, one exp) in place of v1's; rstd of the partial computed here (v2 proper
+      // caches it at take_f, so this slightly overstates v2's cost)
+      if (ar_has_part) { src2[n2] = ar_part; rs2[n2++] = ar_rstd192_v2(ar_part); }
+      ar_depth_mix192_v2(src2, rs2, n2, w, ar_diag_scratch);
+#else
+      if (ar_has_part) { src2[n2] = ar_part; rs2[n2++] = ar_rstd192(ar_part); }
+      ar_depth_mix192(src2, rs2, n2, w, ar_diag_scratch);
+#endif
+      ar_diag_sum += ar_diag_scratch[ar_n & 127];
+    }
+#endif
+    (void)w;
+    std::memcpy(x, ar_has_part ? ar_part : ar_src[ar_n - 1], sizeof(float) * D);
+    return;
+#endif
+    const float* src[AR_MAXC + 1];
+    float rs[AR_MAXC + 1];
+    int n = 0;
+    for (int i = 0; i < ar_n; i++) { src[n] = ar_src[i]; rs[n++] = ar_rstd[i]; }
+#if TF_ARV2 >= 5
+    (void)rs;
+    (void)src;
+    (void)w;
+    const int q = ar_qnext++;
+    const float* Aq = ar_n == 1 ? ar_src[0] : ar_qA[q];   // lazy x0 (see ar_push)
+    if (!ar_has_part) {                                    // completed sources only: out = A / Z
+      if (ar_n == 1) {                                     // x0 alone: exactly x0
+        for (int d = 0; d < D; d += 8) _mm256_store_ps(x + d, _mm256_load_ps(Aq + d));
+      } else {
+        const __m256 r = _mm256_set1_ps(1.0f / ar_qZ[q]);
+        for (int d = 0; d < D; d += 8) _mm256_store_ps(x + d, _mm256_mul_ps(_mm256_load_ps(Aq + d), r));
+      }
+    } else {
+      const float lp = (ar_part_dot_q == q ? ar_part_dot : ar_dot192_v2(ar_qw(q), ar_part)) * ar_part_rstd;
+      const float m = lp > ar_qM[q] ? lp : ar_qM[q];
+      alignas(32) float ex[8] = {ar_qM[q] - m, lp - m, 0, 0, 0, 0, 0, 0};
+      _mm256_store_ps(ex, exp256_ps(_mm256_load_ps(ex)));
+      const float den = ex[0] * ar_qZ[q] + ex[1];
+      const __m256 ra = _mm256_set1_ps(ex[0] / den), rb = _mm256_set1_ps(ex[1] / den);
+      for (int d = 0; d < D; d += 8)
+        _mm256_store_ps(x + d, _mm256_fmadd_ps(rb, _mm256_load_ps(ar_part + d), _mm256_mul_ps(ra, _mm256_load_ps(Aq + d))));
+    }
+#elif TF_ARV2
+    if (ar_has_part) { src[n] = ar_part; rs[n++] = ar_part_rstd; }
+    ar_depth_mix192_v2(src, rs, n, w, x);
+#else
+    if (ar_has_part) { src[n] = ar_part; rs[n++] = ar_rstd192(ar_part); }
+    ar_depth_mix192(src, rs, n, w, x);
+#endif
+  }
+#if TF_ARV2 >= 5
+  // next_q: the read that will use this partial next (-1: the partial is pushed before any read sees it)
+  void ar_take_f(int next_q) {
+    if (ar_has_part && next_q >= 0) {
+      ar_part_rstd = ar_take_f_dot_v2(ar_part, ar_f, ar_qw(next_q), &ar_part_dot);   // add + rms + next dot, one pass
+      ar_part_dot_q = next_q;
+      return;
+    }
+    ar_part_dot_q = -1;
+    if (ar_has_part) {
+      ar_part_rstd = ar_take_f_v2(ar_part, ar_f);
+    } else {
+      std::memcpy(ar_part, ar_f, sizeof(float) * D);
+      ar_part_rstd = ar_rstd192_v2(ar_part);
+      ar_has_part = true;
+    }
+  }
+#else
+  void ar_take_f() {   // partial += f (the block's running sum), f = sub-layer output
+#if TF_ARV2
+    if (ar_has_part) {
+      ar_part_rstd = ar_take_f_v2(ar_part, ar_f);       // add + sum of squares in one pass
+    } else {
+      std::memcpy(ar_part, ar_f, sizeof(float) * D);
+      ar_part_rstd = ar_rstd192_v2(ar_part);
+      ar_has_part = true;
+    }
+#else
+    if (ar_has_part) {
+      for (int d = 0; d < D; d++) ar_part[d] += ar_f[d];
+    } else {
+      std::memcpy(ar_part, ar_f, sizeof(float) * D);
+      ar_has_part = true;
+    }
+#endif
+  }
+#endif
+
+#endif
 
   // scratch
   alignas(64) float x[D] = {}, xn[D] = {}, yb[D] = {};
@@ -381,8 +589,41 @@ struct TransformerOptImpl {
     }
     {
       PSCOPE(PS_MM_KOP);
-      qgemv_add(L.op.m, q5, x);
+      qgemv_add(L.op.m, q5, TF_ACC);
     }
+  }
+
+  // GQA / value embeddings (build constants TF_KVH, TF_VE): k and v come out
+  // of the projections with TF_KVH heads; v gets c0*v + c1*VE[token] (token of
+  // the row being fed; sentinel rows >= 208 per TF_VE_SENT), then the K/V heads
+  // are repeated for the NH query heads, so the attention kernels and the KV
+  // ring stay as they are.
+  int cur_tok = 0;
+  void kv_expand(const VanArenas& L) {
+#if TF_VE
+    {
+      constexpr int W = TF_KVH * DH;
+      int row = cur_tok;
+#ifndef TF_VE_SENT
+#define TF_VE_SENT 0
+#endif
+      if (row >= V) row = (TF_VE_SENT == 1) ? V - 1 : (TF_VE_SENT == 2 ? row - V : -1);
+      if (row >= 0) {
+        const float* e = L.ve + size_t(row) * W;
+        for (int i = 0; i < W; i++) vf[i] = L.ve_c0 * vf[i] + L.ve_c1 * e[i];
+      } else {
+        for (int i = 0; i < W; i++) vf[i] = L.ve_c0 * vf[i];
+      }
+    }
+#else
+    (void)L;
+#endif
+#if TF_KVH != 3
+    for (int h = TF_KVH; h < NH; h++) {
+      std::memcpy(kf + h * DH, kf + (h % TF_KVH) * DH, sizeof(float) * DH);
+      std::memcpy(vf + h * DH, vf + (h % TF_KVH) * DH, sizeof(float) * DH);
+    }
+#endif
   }
 
   void van_layer(int vi) {
@@ -398,6 +639,7 @@ struct TransformerOptImpl {
       qgemv_f32(L.kp.m, q5 + D, kf);
       qgemv_f32(L.vp.m, q5 + 2 * D, vf);
     }
+    kv_expand(L);
     {
       PSCOPE(PS_EL_HEADPREP);
       for (int h = 0; h < NH; h++) rms_norm64(qf + h * DH, qf + h * DH);
@@ -486,7 +728,7 @@ struct TransformerOptImpl {
     }
     {
       PSCOPE(PS_MM_VOP);
-      qgemv_add(L.op.m, q5, x);
+      qgemv_add(L.op.m, q5, TF_ACC);
     }
   }
 
@@ -513,6 +755,7 @@ struct TransformerOptImpl {
       qgemv_f32(L.kp.m, q5 + D, kf);
       qgemv_f32(L.vp.m, q5 + 2 * D, vf);
     }
+    kv_expand(L);
     {
       PSCOPE(PS_EL_HEADPREP);
       for (int h = 0; h < NH; h++) rms_norm64(kf + h * DH, kf + h * DH);
@@ -562,10 +805,18 @@ struct TransformerOptImpl {
     }
     {
       PSCOPE(PS_MM_MLP_DOWN);
+#ifdef TF_W5
+      if (mm.down_wide) {
+        if (nnz > static_cast<int>(QMAT_SPARSE_DENSITY_THRESHOLD * mm.down8.d_in))
+          qsparse_dense_add(mm.down8, q768, TF_ACC);
+        else
+          qsparse_add(mm.down8, q768, idx768, nnz, TF_ACC);
+      } else
+#endif
       if (nnz > static_cast<int>(QMAT_SPARSE_DENSITY_THRESHOLD * mm.down.d_in))
-        qsparse4_dense_add(mm.down, q768, x);
+        qsparse4_dense_add(mm.down, q768, TF_ACC);
       else
-        qsparse4_add(mm.down, q768, idx768, nnz, x);
+        qsparse4_add(mm.down, q768, idx768, nnz, TF_ACC);
     }
   }
 
@@ -655,6 +906,7 @@ struct TransformerOptImpl {
     // Fail-safe: the flag holds for exactly one step.
     const bool gel = gelesen;
     gelesen = true;
+    cur_tok = token;
     const float* tok = M.tok_table + size_t(token) * D;
     if (M.paket.present) tok = paket_token_row(token);
     int nnzp;
@@ -667,6 +919,14 @@ struct TransformerOptImpl {
     }
     {
       PSCOPE(PS_MM_PRIOR);
+#ifdef TF_W5
+      if (M.prior_wide) {
+        if (nnzp > PRIOR_DENSE_NNZ)
+          qsparse_dense_f32(M.prior8, q8p, yb);
+        else
+          qsparse_f32(M.prior8, q8p, idxp, nnzp, yb);
+      } else
+#endif
       if (nnzp > PRIOR_DENSE_NNZ)
         qsparse4_dense_f32(M.prior, q8p, yb);
       else
@@ -677,6 +937,66 @@ struct TransformerOptImpl {
       embed_combine192(tok, yb, x);  // x0 = tok_row + rms_norm(prior_y)
     }
 
+#if TF_AR
+    // AttnRes replace mode: no U-Net skips, no residual/token coefficients.
+    // Every sub-layer reads h = depth_mix(x0, completed block sums, partial)
+    // and its output f goes into the partial sum of the current block.
+    ar_n = 0;
+    ar_has_part = false;
+#if TF_ARV2 >= 5
+    ar_qnext = 0;
+    ar_part_dot_q = -1;
+#endif
+    ar_push(x);                                   // source 0 = x0
+    for (int l = 0; l < NL; l++) {
+      {
+        PSCOPE(PS_EL_RESID);
+        if (l % ARB == 0 && ar_has_part) {        // block boundary: freeze its sum
+          ar_push(ar_part);
+          ar_has_part = false;
+        }
+        ar_read(M.ar_q_mix[l]);                   // x = h for the mixer
+      }
+      if (!gel && l == NL - 1) {                  // unread row: K/V of the last layer only
+        van_layer_kv(M.layer2van[l]);
+        t++;
+        return;
+      }
+      std::memset(ar_f, 0, sizeof(ar_f));
+      acc = ar_f;
+      if (OptModel::KIMI_L[l])
+        kimi_layer(M.layer2kimi[l]);
+      else
+        van_layer(M.layer2van[l]);
+      {
+        PSCOPE(PS_EL_RESID);
+#if TF_ARV2 >= 5
+        ar_take_f(2 * l + 1);
+#else
+        ar_take_f();
+#endif
+        ar_read(M.ar_q_mlp[l]);                   // x = h for the MLP
+      }
+      std::memset(ar_f, 0, sizeof(ar_f));
+      mlp_block(l);
+      {
+        PSCOPE(PS_EL_RESID);
+#if TF_ARV2 >= 5
+        // next read: the final read (2*NL) after the last layer; else layer l+1's mixer read, unless a block
+        // boundary pushes the partial first
+        ar_take_f(l == NL - 1 ? 2 * NL : ((l + 1) % ARB != 0 ? 2 * l + 2 : -1));
+#else
+        ar_take_f();
+#endif
+      }
+      acc = x;
+    }
+    {
+      PSCOPE(PS_EL_RESID);
+      ar_read(M.ar_q_final);                      // x = final read; rms_norm + unembedding below
+    }
+    (void)tok;
+#else
     for (int l = 0; l < NL; l++) {
       {
         PSCOPE(PS_EL_RESID);
@@ -703,6 +1023,7 @@ struct TransformerOptImpl {
         std::memcpy(skip_store[l], x, sizeof(float) * D);  // push AFTER block
       }
     }
+#endif
 
     {
       PSCOPE(PS_EL_NQ_FIN);
@@ -714,7 +1035,12 @@ struct TransformerOptImpl {
     }
     {
       PSCOPE(PS_EL_HEAD);
+#if TF_PLM
+      // xn = the unembedding input; prior_f32 = this step's prior row
+      head_plm_softcap_softmax(logits, prior_f32, dot192(M.plm_w, xn), probs208);
+#else
       head_softcap_softmax(logits, probs208);
+#endif
       std::memcpy(probs_out, probs208, sizeof(float) * V);
     }
     t++;

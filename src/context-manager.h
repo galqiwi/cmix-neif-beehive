@@ -100,6 +100,7 @@ struct ContextManager {
   unsigned long long page_sur = 0, page_math = 0, page_rec = 0, page_link = 0;
   unsigned long long lx1_top1 = 0, lx1_conf = 0, lx1_agree = 0, lx1_ctl = 0;
   unsigned long long tf1_gate_ctx1 = 0;
+  unsigned long long cmx_tf_agree = 0, cmx_tf_final = 0, cmx_meta_mix = 0, cmx_meta_fin = 0;  // research contexts
   unsigned int line_class_ = 0, line_prefix_hash_ = 0;
   unsigned long long reload_line = 0, reload_lpr = 0, reload_aux = 0, reload_ppm = 0,
       reload_mtc = 0, reload_brk = 0, reload_ord = 0;

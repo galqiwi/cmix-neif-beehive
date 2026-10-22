@@ -1,0 +1,60 @@
+{
+ "step": 550082,
+ "epoch": 930,
+ "time": 1792352643.3433278,
+ "plan": {
+  "phase": "bf16",
+  "overrides": {
+   "n_key_value_heads": 1,
+   "value_embedding_pattern": [
+    null,
+    null,
+    null,
+    0,
+    null,
+    null,
+    null,
+    1,
+    null,
+    null,
+    null,
+    2,
+    null,
+    null,
+    null,
+    3
+   ],
+   "d_mlp": 1024,
+   "skip_connections": false,
+   "token_embedding_connections": false,
+   "prior_logit_mixing": true
+  },
+  "epochs": 2000,
+  "lr": null,
+  "opt_batch_tokens": null,
+  "warmup_mult": null,
+  "final_mult": null,
+  "warmup_frac": null,
+  "seed": 1,
+  "ve_sentinel": "clamp",
+  "arch": {
+   "attnres": {
+    "mode": "replace",
+    "block": 2,
+    "impl": "fused"
+   }
+  },
+  "anneal": null,
+  "rewarm": null,
+  "init": null,
+  "plan_tail": null,
+  "rate_term": null,
+  "mixed": null,
+  "world": 8,
+  "total_batches": 1182985,
+  "micro": 131072,
+  "accum": 1
+ },
+ "sha256_model.tch": "65bd78f02631ffdea9e1435a6afcf438363f99b0b5d6217564323927f869eaa1",
+ "sha256_opt.pt": "24d46ced660e108832c2d55ee83c22cda0f9ec06673dce90e370fdff4d17aa65"
+}

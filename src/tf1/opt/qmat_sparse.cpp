@@ -13,7 +13,11 @@ namespace opt {
 
 namespace {
 
+#ifdef TF_W5
+constexpr int FLUSH_PAIRS = 4;   // research: |w| <= 31 -> 4 * 2*127*31 = 31496 < 32767 (int8 column kernels only)
+#else
 constexpr int FLUSH_PAIRS = 18;  // 18 * 2*127*7 = 32004 < 32767 (exact bound)
+#endif
 #ifndef QMAT_PF_PAIRS_AHEAD
 #define QMAT_PF_PAIRS_AHEAD 4
 #endif

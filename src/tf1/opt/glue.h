@@ -115,6 +115,20 @@ void rope_apply_192(float* h192, const float* sin32, const float* cos32);
 // difference, <= ~1 ulp on den). Measured 1480 cycles/call (naive: ~14.6K);
 // max |delta(-log p[target])| vs double reference: 2.3e-6 nats.
 void head_softcap_softmax(float* l, float* probs);
+#if defined(TF_PLM) && TF_PLM
+// TF_PLM: the per-token prior head of pysrc compute_logits
+// (prior_logit_mixing), between the softcap and the softmax:
+//   l_i = 15*tanh(l_i/15) + softplus(hdot + 0.5413248546129181) * (c_i - mean c)
+//   c_i = max(log p_i, -12)  (p_i = 0 -> -12, as clamp(log 0 = -inf, -12))
+// p = the prior row this step was fed (all 208 entries are real, the mean
+// runs over all 208), hdot = logit_mixing_head.weight . xn (the final-norm
+// output, i.e. the unembedding input).  The prior term is NOT softcapped.
+// Softcap and softmax are the operations of head_softcap_softmax; log and
+// softplus are log256_ps / softplus256_ps; the sum of c is 2-accumulator
+// 8-lane + lane tree, like den.  Deterministic, not bit-exact vs torch.
+void head_plm_softcap_softmax(float* l, const float* prior, float hdot,
+                              float* probs);
+#endif
 // f16 emit of the 205 probabilities (vcvtps2ph round-nearest-even)
 void probs_to_f16(const float* probs, uint16_t* out);
 // e2e-test helper, matches test_e2e's sanity loss term

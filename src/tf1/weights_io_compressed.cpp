@@ -159,6 +159,8 @@ enum : uint8_t {
   ENC_PLANE4 = 3,
   ENC_ROPE_SIN = 4,
   ENC_ROPE_COS = 5,
+  ENC_INT5M_DRAFT = 6,  // earlier 3-class 5-bit draft: rejected
+  ENC_INT5M = 7,  // research (v4 only): [-31, 31], row zero flag, row class (3-bit tree), class 6-bit trees
 };
 
 // --- bit-exact host port of CUDA libdevice __nv_sinf/__nv_cosf --------------
@@ -359,6 +361,8 @@ struct Models {
   std::vector<std::vector<CountNode> > cname;  // v3 order-2, per context
   std::vector<CountNode> cplane;  // v4: counting trees of byte planes 0 and 1
   CountNode zrow;                 // v4: zero-row flag of ENC_INT4
+  CountNode rcls[8];              // research ENC_INT5M: row class tree (3 bits)
+  CountNode cint5[5][64];         // research ENC_INT5M: one 6-bit tree per class
   CountNode tname, tblock, tmeta;  // v4: template flags of name/metadata
 
   explicit Models(bool v3)
@@ -533,6 +537,27 @@ WeightsFile load_v2(Reader& r, const char* path, bool v3, bool v4) {
         } else {
           for (size_t k = 0; k < numel; k++)
             out[k] = int8_t(int(dec.decode_tree(m.int4.data(), 4)) - 7);
+        }
+        break;
+      }
+      case ENC_INT5M_DRAFT:
+        die("%s: %s: encoding 6 (draft mixed format) is not supported; re-export the container", path, name.c_str());
+      case ENC_INT5M: {
+        if (t.dtype != DT_I8 || !v4 || ndim < 2)
+          die("%s: %s: ENC_INT5M needs DT_I8, a matrix and format v4", path, name.c_str());
+        int8_t* out = reinterpret_cast<int8_t*>(t.data.data());
+        size_t rows = t.shape[0];
+        size_t cols = rows ? numel / rows : 0;
+        for (size_t r0 = 0; r0 < rows; r0++) {
+          int8_t* row = out + r0 * cols;
+          if (dec.decode_cbit(&m.zrow, CNT_LIMIT_ZROW)) {
+            std::memset(row, 0, cols);
+            continue;
+          }
+          uint32_t c = dec.decode_ctree(m.rcls, 3, CNT_LIMIT_ZROW);
+          if (c > 4) die("%s: %s: bad row class", path, name.c_str());
+          for (size_t k = 0; k < cols; k++)
+            row[k] = int8_t(int(dec.decode_ctree(m.cint5[c], 6, CNT_LIMIT_INT4)) - 31);
         }
         break;
       }

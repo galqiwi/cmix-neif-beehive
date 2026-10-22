@@ -1,0 +1,182 @@
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+speedpatch: host cu_seqlens for chunk_kda/causal_conv1d, disable_recompute=True
+speedpatch: pkd loader registers host cu_seqlens
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+articles split: 0
+arch: {'attnres': {'mode': 'replace', 'block': 2, 'new_params': 6336}}
+loaded /home/user/work/y2p/runs/MF_parent/snap_e930/model.tch (strict=False) missing=315 unexpected=0
+  missing (first): ['embedding.quantize_weight.scale', 'embedding.last_table.quantize_weight.scale', 'embedding.last_projection.quantize_weight.scale', 'embedding.last_projection.quantize_activation.scale', 'embedding.match_table.quantize_weight.scale', 'embedding.match_projection.quantize_weight.scale', 'embedding.match_projection.quantize_activation.scale', 'value_embeddings.0.inner.quantize_weight.scale', 'value_embeddings.1.inner.quantize_weight.scale', 'value_embeddings.2.inner.quantize_weight.scale']
+lift_subnormal: 224 rows lifted to |max| 1e-30
+mixed precision: 155 weight quantizers got per-row ranges from /home/user/work/y2p/runs/MF/fisher/alloc_1.000.npz
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+articles before merge: 172437 (average length 3175.6, average square length 35102790.1), after merge: 172437 (average length 3175.6, average square length 35102790.1)
+articles split: 0
+dump loader: 172437 documents | 593115275 rows (547413565 stream, 45701710 inserted, 7153276 sentinel, 2901367 redirect page) | scored 547585951 (92.3237 %)
+dump loader: packing 37 carrier bits, X=2, edge mark 216, window 2048, redirmerge True, arms syn,alias,a2,a2n,sent,z3,x0row,redirmerge,aliasprompt,autor,meta,metavorn,metasent,rd,titelersatz2,subdedup,xdedup,tfonly,metaform3,frueh,redirfest,uid_erst,tsprog2,metakons,kapfrei1,aliastab1,kalblock1,c8tune1,leiter2_o25
+dump loader: longest document 131037 rows, micro-batch 131072 (truncation rule not needed), mind the position limit
+dump loader: position limit 131072, longest document 131037 rows, margin 35
+loader for 64 epochs: 37856 batches, built in 6 s
+cosine_exact: N 37856 updates, LR(i=0) 1.000000, LR(mid) 0.512480, LR(i=N-1) 0.025000
+fastmuon: pysrc.optimizer.Muon -> FastMuon (batched by shape)
+RESUMED from /home/user/work/y2p/runs/MF/A/qat/state: epoch 0 step 0
+{"name": "MF_A_fullC1", "params": 9325119, "world": 8, "start_step": 0, "total_batches": 37856}
+fakequant: fused 160 activation quantizers, 155 per-row weight quantizers
+rate_term: restored C1 state from /home/user/work/y2p/runs/MF/A/qat/state/rate.json
+rate_term: C1 gradient applied from update index 0 (stage epoch 0 boundary; setup at start)
+EPOCH 1 step 592 lr_mult 0.99941  238.6 s since start
+STATE saved epoch 1 step 592
+/home/user/work/tft/.venv/lib/python3.11/site-packages/torch/distributed/c10d_logger.py:83: UserWarning: barrier(): using the device under current context. You can specify `device_id` in `init_process_group` to mute this warning.
+  return func(*args, **kwargs)
+EPOCH 2 step 1183 lr_mult 0.99766  474.6 s since start
+STATE saved epoch 2 step 1183
+EPOCH 3 step 1774 lr_mult 0.99473  710.8 s since start
+STATE saved epoch 3 step 1774
+EPOCH 4 step 2366 lr_mult 0.99064  949.5 s since start
+STATE saved epoch 4 step 2366
+EPOCH 5 step 2957 lr_mult 0.98540  1187.2 s since start
+STATE saved epoch 5 step 2957
+EPOCH 6 step 3548 lr_mult 0.97903  1424.2 s since start
+STATE saved epoch 6 step 3548
+EPOCH 7 step 4140 lr_mult 0.97152  1661.9 s since start
+STATE saved epoch 7 step 4140
+EPOCH 8 step 4732 lr_mult 0.96290  1899.7 s since start
+STATE saved epoch 8 step 4732
+EPOCH 9 step 5324 lr_mult 0.95320  2137.5 s since start
+STATE saved epoch 9 step 5324
+EPOCH 10 step 5916 lr_mult 0.94243  2374.8 s since start
+STATE saved epoch 10 step 5916
+EPOCH 11 step 6507 lr_mult 0.93065  2612.2 s since start
+STATE saved epoch 11 step 6507
+EPOCH 12 step 7099 lr_mult 0.91784  2849.6 s since start
+STATE saved epoch 12 step 7099
+EPOCH 13 step 7691 lr_mult 0.90405  3087.1 s since start
+STATE saved epoch 13 step 7691
+EPOCH 14 step 8282 lr_mult 0.88934  3324.5 s since start
+STATE saved epoch 14 step 8282
+EPOCH 15 step 8874 lr_mult 0.87369  3561.9 s since start
+STATE saved epoch 15 step 8874
+EPOCH 16 step 9465 lr_mult 0.85721  3799.2 s since start
+STATE saved epoch 16 step 9465
+EPOCH 17 step 10056 lr_mult 0.83989  4036.3 s since start
+STATE saved epoch 17 step 10056
+EPOCH 18 step 10648 lr_mult 0.82176  4274.0 s since start
+STATE saved epoch 18 step 10648
+EPOCH 19 step 11239 lr_mult 0.80291  4511.3 s since start
+STATE saved epoch 19 step 11239
+EPOCH 20 step 11831 lr_mult 0.78333  4748.8 s since start
+STATE saved epoch 20 step 11831
+EPOCH 21 step 12422 lr_mult 0.76313  4985.7 s since start
+EVAL {"nats_per_tok": 0.8941168684284706, "bits_per_tok": 1.2899379720569244, "n_scored": 547585942, "epoch": 21, "step": 12422, "time": 1792359858.844814}
+STATE saved epoch 21 step 12422
+EPOCH 22 step 13013 lr_mult 0.74233  5283.8 s since start
+STATE saved epoch 22 step 13013
+EPOCH 23 step 13604 lr_mult 0.72097  5520.6 s since start
+STATE saved epoch 23 step 13604
+EPOCH 24 step 14196 lr_mult 0.69908  5758.3 s since start
+STATE saved epoch 24 step 14196
+EPOCH 25 step 14787 lr_mult 0.67678  5995.5 s since start
+STATE saved epoch 25 step 14787
+EPOCH 26 step 15379 lr_mult 0.65404  6233.3 s since start
+STATE saved epoch 26 step 15379
+EPOCH 27 step 15971 lr_mult 0.63096  6471.1 s since start
+STATE saved epoch 27 step 15971
+EPOCH 28 step 16562 lr_mult 0.60763  6707.8 s since start
+STATE saved epoch 28 step 16562
+EPOCH 29 step 17154 lr_mult 0.58403  6945.3 s since start
+STATE saved epoch 29 step 17154
+EPOCH 30 step 17745 lr_mult 0.56030  7182.4 s since start
+STATE saved epoch 30 step 17745
+EPOCH 31 step 18336 lr_mult 0.53646  7419.6 s since start
+STATE saved epoch 31 step 18336
+EPOCH 32 step 18927 lr_mult 0.51256  7656.5 s since start
+STATE saved epoch 32 step 18927
+EPOCH 33 step 19520 lr_mult 0.48858  7894.6 s since start
+STATE saved epoch 33 step 19520
+EPOCH 34 step 20111 lr_mult 0.46474  8131.8 s since start
+STATE saved epoch 34 step 20111
+EPOCH 35 step 20703 lr_mult 0.44097  8369.7 s since start
+STATE saved epoch 35 step 20703
+EPOCH 36 step 21294 lr_mult 0.41741  8607.0 s since start
+STATE saved epoch 36 step 21294
+EPOCH 37 step 21886 lr_mult 0.39404  8844.3 s since start
+STATE saved epoch 37 step 21886
+EPOCH 38 step 22478 lr_mult 0.37096  9081.6 s since start
+STATE saved epoch 38 step 22478
+EPOCH 39 step 23070 lr_mult 0.34822  9318.7 s since start
+STATE saved epoch 39 step 23070
+EPOCH 40 step 23661 lr_mult 0.32592  9556.1 s since start
+STATE saved epoch 40 step 23661
+EPOCH 41 step 24253 lr_mult 0.30403  9793.3 s since start
+STATE saved epoch 41 step 24253
+EPOCH 42 step 24844 lr_mult 0.28267  10030.9 s since start
+STATE saved epoch 42 step 24844
+EPOCH 43 step 25435 lr_mult 0.26187  10268.5 s since start
+EVAL {"nats_per_tok": 0.8880074513628919, "bits_per_tok": 1.2811239463536916, "n_scored": 547585942, "epoch": 43, "step": 25435, "time": 1792365141.05064}
+STATE saved epoch 43 step 25435
+EPOCH 44 step 26027 lr_mult 0.24164  10566.9 s since start
+STATE saved epoch 44 step 26027
+EPOCH 45 step 26618 lr_mult 0.22209  10803.7 s since start
+STATE saved epoch 45 step 26618
+EPOCH 46 step 27209 lr_mult 0.20324  11040.7 s since start
+STATE saved epoch 46 step 27209
+EPOCH 47 step 27800 lr_mult 0.18514  11278.0 s since start
+STATE saved epoch 47 step 27800
+EPOCH 48 step 28391 lr_mult 0.16782  11514.8 s since start
+STATE saved epoch 48 step 28391
+EPOCH 49 step 28983 lr_mult 0.15131  11752.5 s since start
+STATE saved epoch 49 step 28983
+EPOCH 50 step 29575 lr_mult 0.13566  11990.1 s since start
+STATE saved epoch 50 step 29575
+EPOCH 51 step 30167 lr_mult 0.12093  12227.6 s since start
+STATE saved epoch 51 step 30167
+EPOCH 52 step 30759 lr_mult 0.10714  12464.6 s since start
+STATE saved epoch 52 step 30759
+EPOCH 53 step 31350 lr_mult 0.09435  12701.8 s since start
+STATE saved epoch 53 step 31350
+EPOCH 54 step 31942 lr_mult 0.08255  12939.2 s since start
+STATE saved epoch 54 step 31942
+EPOCH 55 step 32534 lr_mult 0.07178  13176.5 s since start
+STATE saved epoch 55 step 32534
+EPOCH 56 step 33125 lr_mult 0.06210  13413.5 s since start
+STATE saved epoch 56 step 33125
+EPOCH 57 step 33717 lr_mult 0.05348  13651.0 s since start
+STATE saved epoch 57 step 33717
+EPOCH 58 step 34308 lr_mult 0.04598  13888.0 s since start
+STATE saved epoch 58 step 34308
+EPOCH 59 step 34899 lr_mult 0.03961  14124.8 s since start
+STATE saved epoch 59 step 34899
+EPOCH 60 step 35490 lr_mult 0.03437  14361.8 s since start
+STATE saved epoch 60 step 35490
+EPOCH 61 step 36081 lr_mult 0.03028  14598.9 s since start
+STATE saved epoch 61 step 36081
+EPOCH 62 step 36672 lr_mult 0.02735  14836.2 s since start
+STATE saved epoch 62 step 36672
+EPOCH 63 step 37264 lr_mult 0.02559  15073.5 s since start
+STATE saved epoch 63 step 37264
+EPOCH 64 step 37856 lr_mult 0.02500  15310.7 s since start
+STATE saved epoch 64 step 37856
+EVAL {"nats_per_tok": 0.8822160349015004, "bits_per_tok": 1.2727686985451192, "n_scored": 547585942, "epoch": 64, "tag": "final", "time": 1792370183.552486}

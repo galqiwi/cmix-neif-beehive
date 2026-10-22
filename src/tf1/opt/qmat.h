@@ -110,6 +110,7 @@ struct QDense {
   int ngroups = 0;      // rows_padded / group_rows
   int rows_padded = 0;  // round_up(d_out, group_rows)
   size_t bytes = 0;     // total stream bytes (multiple of the group size)
+  int wide = 0;         // research TF_W5: some |w| > 7 (up to 15) -> int16 partials widened every 4 chunks
 };
 
 // arena size in bytes (excluding QMAT_TAIL_SLACK)

@@ -1,0 +1,40 @@
+# Arm A: sha256 of every artefact from random init to the shipped archive (as produced on the hutter_research hosts).
+# Stage names as in ../scripts/reproduce_armA.sh. Model/optimizer files are torch.save outputs: their bytes depend on
+# torch version and GPU reduction order; the container and everything after it are deterministic given the fp32 model.
+
+# package D (training/README.md stages a-c; host checksum file: package_D_SHA256SUMS.txt)
+8e0b264a777cb56a6be48c58002450c4711b1cebf3ffcb0129a32ef34273c3ba  coder stream (552,750,198 B; comp9 -e, written before coding starts)
+bc419ee2f7bd4dddc6004851ab0c87623c6e59ef3fccb778a4d650e94c1ad9f9  ppmd-bytes.uint8 (= training/tf/1_dump/README.md)
+
+# phase1: bf16 from random init, seed 1, 2000-epoch plan, one uninterrupted 8-GPU run (launcher.log), state at epoch 930
+65bd78f02631ffdea9e1435a6afcf438363f99b0b5d6217564323927f869eaa1  phase1/snap_e930/model.tch
+24d46ced660e108832c2d55ee83c22cda0f9ec06673dce90e370fdff4d17aa65  phase1/snap_e930/opt.pt
+
+# fisher: NARROW allocation (levels 1/3/7 = 2/3/4-bit, budget 1.00, class rate, 48 batches)
+9fd006978faec53a1704c00242a93a2761caa739d45915d4886142f0b9ecf8c1  fisher/fisher.npz
+da99013f87b10663601ea33d0a54656851c5a9092d06f7a267505cb565bfa153  fisher/alloc_1.000.npz
+
+# init: shared QAT post-init state (step 0)
+3317599301d092ed1db63269620a7d0e31762c09739aafa3246505d53dc839fa  init/qat/state/model.tch
+7d5b60592e9ff0b9802622b095ec73f788fa8b4c26ba6238dd2215e6a9fe45a4  init/qat/state/opt.pt
+
+# qat: 64 epochs, 37,856 updates, C1 on every update; QAT-mode evals q21 1.28994 q43 1.28112 q64 1.27277 bits/token
+002bc3807fb3dad19139a00967941ffd4c218696a4a4d00a86fb1576e173f372  qat/state/model.tch (epoch 64)
+
+# fp32: 1 epoch at 3e-6; strict deployed eval W2048 1.2696958705656336 bits/token
+5e62006efa2d2ad3296c946972bcdcc83acf6e9bf94cc564fa651e1214d764af  fp32/model.tch
+
+# export at window 1536 (re-run with the packaged tools on 2026-10-21: identical); gate 597/597 tensors, 0 mismatches
+3040e708361c5f70d46a2a256216bd5815d1dc483a4fa180cdcc8ce5f074a52c  w1536/raw/weights-poc8m_w2048.bin
+141ee13c316811157bea167846b3f45472affff7adaa1b8b263e30621e490885  w1536/c4/final_v4.c4 (3,649,198 B) = weights-poc8m_w2048_p15f_v3bf16_gestrichen_v4.c4 in this tree
+# strict deployed eval W1536: 1.2740351049633374 (2026-10-19), re-run 2026-10-21: 1.2740347583105787 (8-GPU eval noise)
+
+# release builds (build.sh, Ubuntu 24.04, published install.sh, clang 18.1.3)
+901471238d1e1c78520b2f83030da52aeae42cae694dcbc964e2411d2b6ac5fd  comp9, Arm A without the prefetch change (3,941,780 B)
+db2ddfb9955f530f116b482491dea4370ebf455490de35ed1c8b5163dcd416d0  comp9, THIS tree (Arm A + dense prefetch 6 KB; 3,941,780 B)
+
+# full-file compression of enwik9 (measured)
+c35c3dc8aa3500cff8faf10c54eb18cbe8a09401d438f2faab7e6907ae26ba1b  archive9 from comp9 90147123 (90,763,792 B; full_file/v6_armA_full_encode.log)
+bffe73800d53606a27152461fac1478bcf38cc80394cce4dbabc3471f6ea56b8  archive9 with this tree's decoder (same 90,763,792 B: the self-extracting
+                                                                  decoder prefix rebuilt from comp9 db2ddfb9, all other bytes identical;
+                                                                  built independently by two agents with the same result)

@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "transformer_gate_ctx.h"
+#include "cmx_exp.h"
 #include <vector>
 #include <stdlib.h>
 #include <stdio.h>
@@ -77,6 +78,8 @@ unsigned long long Predictor::GetNumModels() {
  void Predictor::AddMixer(int layer, const unsigned long long& context,
     float learning_rate) {
   mixer_lr::g_layer = layer;
+  if (layer == 0 && cmx::O().lr0) learning_rate *= cmx::O().lr0 * 0.001f;
+  if (layer != 0 && cmx::O().lr1) learning_rate *= cmx::O().lr1 * 0.001f;
   if (layer == 0) {
     mixer_0_.emplace_back(
         layers_[layer].Inputs(), layers_[layer].ExtraInputs(), context,
@@ -246,7 +249,9 @@ unsigned int Discretize(float p) {
   AddMixer(0, manager_.mx16, 0.005);
   AddMixer(0, manager_.mx14, 0.005);
   AddMixer(0, manager_.mx15, 0.005);
-  AddMixer(0, manager_.lx1_agree, 0.005);
+  // research switch CMX_TFMIX: the last layer-0 mixer selects its weights by
+  // the transformer's confidence instead of the byte LSTM's (same geometry)
+  AddMixer(0, cmx::O().metamix ? manager_.cmx_meta_mix : cmx::O().tfmix ? manager_.cmx_tf_agree : manager_.lx1_agree, 0.005);
 
   input_size = mixer_0_.size() + auxiliary_size_;
   ++input_size;
@@ -256,7 +261,7 @@ unsigned int Discretize(float p) {
   // gated) selects the same weight row as a context-free mixer, every gated
   // zone gets a row of its own.  This costs rows in the hash map, no
   // geometry.
-  AddMixer(1, transformer::Active() ? manager_.tf1_gate_ctx1
+  AddMixer(1, transformer::Active() ? (cmx::O().metafin ? manager_.cmx_meta_fin : cmx::O().tffinal ? manager_.cmx_tf_final : manager_.tf1_gate_ctx1)
                                  : manager_.zero_context_, 0.0003);
 
   layers_[0].SetExtraInputSize(mixer_0_.size());
@@ -280,6 +285,27 @@ float tf1_slot_output=0.0f;
   fxcm_model_.PredictHalf();
   manager_.UpdateLx1();
   manager_.UpdateTf1Gate();   // gate zone as mixer context
+  if (cmx::O().tfmix || cmx::O().tffinal) {
+    const cmx::TfConf& t = cmx::T();
+    unsigned int q = 0;
+    if (t.valid && t.ex >= tf1_slot_->Lx1Bot() && t.ex <= tf1_slot_->Lx1Top()) {
+      const float b = t.best;
+      q = 1 + (b >= 0.3f) + (b >= 0.5f) + (b >= 0.7f) + (b >= 0.8f) + (b >= 0.9f)
+            + (b >= 0.95f) + (b >= 0.98f);
+    }
+    if (tf_gate::ctx.zone) q = 9u + (unsigned int)tf_gate::ctx.zone;
+    manager_.cmx_tf_agree = (unsigned long long)q * 256 + manager_.long_bit_context_;
+    manager_.cmx_tf_final = (unsigned long long)q * 16 + (unsigned long long)tf_gate::ctx.zone;
+  }
+  if (cmx::O().metamix || cmx::O().metafin) {
+    const unsigned int mc = cmx::M().Ctx();
+    // the mixer map holds at most 10000 rows: first three bits of the byte in full, then only the bit count
+    const unsigned int bc = manager_.bit_context_;
+    const unsigned int bk = bc < 16 ? bc : 12u + (unsigned int)(31 - __builtin_clz(bc));
+    manager_.cmx_meta_mix = mc ? (1ull << 40) + (unsigned long long)mc * 32 + bk
+                               : (cmx::O().tfmix ? manager_.cmx_tf_agree : manager_.lx1_agree);
+    manager_.cmx_meta_fin = mc ? (1ull << 40) + mc : (cmx::O().tffinal ? manager_.cmx_tf_final : manager_.tf1_gate_ctx1);
+  }
   unsigned int input_index = 0;
   auto bracket_model_output = bracket_model_->Predict()[0];
   layers_[0].SetInput(input_index++, bracket_model_output);
@@ -396,7 +422,7 @@ float tf1_slot_output=0.0f;
                    layers_[0].Inputs()[0], aux_fxcm_input);
     const float adepth_z = adaptive_depth::Gate(adepth_);
     const float adepth_az = adepth_z < 0.0f ? -adepth_z : adepth_z;
-    adepth_.skip = (adepth_az > adaptive_depth::kTau) &&
+    adepth_.skip = (adepth_az > (cmx::O().tau ? cmx::O().tau * 0.001f : adaptive_depth::kTau)) &&
                    (adepth_.coded >= (unsigned long long)0) &&
                    !adaptive_depth::MetaOff();
   }
@@ -651,7 +677,14 @@ void Predictor::E2EGrad(int bit) {
 }
 
 void Predictor::ObserveTfOnlyByte(unsigned int byte) {
-  if (tf1_engine_) tf1_engine_->Step(byte_model_->BytePredict(), byte);
+  if (!tf1_engine_) return;
+  const float* row = tf1_engine_->Step(byte_model_->BytePredict(), byte);
+  // research switch CMX_ALIASFIX (src/cmx_exp.h): the training scores the last
+  // alias row for the first text byte; use its distribution as the slot input
+  if (cmx::O().aliasfix && row && transformer::Active() && !tf1_engine_->GateMasked()) {
+    tf1_slot_->SetProbs(row);
+    tf1_slot_output = tf1_slot_->Predict()[0];
+  }
 }
 
 void Predictor::Pretrain(int bit) {

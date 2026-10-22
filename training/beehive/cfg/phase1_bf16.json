@@ -1,0 +1,47 @@
+{
+  "name": "beehive_s1_prod",
+  "phase": "bf16",
+  "overrides": {
+    "n_key_value_heads": 1,
+    "value_embedding_pattern": [
+      null,
+      null,
+      null,
+      0,
+      null,
+      null,
+      null,
+      1,
+      null,
+      null,
+      null,
+      2,
+      null,
+      null,
+      null,
+      3
+    ],
+    "d_mlp": 1024,
+    "skip_connections": false,
+    "token_embedding_connections": false,
+    "prior_logit_mixing": true
+  },
+  "arch": {
+    "attnres": {
+      "mode": "replace",
+      "block": 2,
+      "impl": "fused"
+    }
+  },
+  "epochs": 2000,
+  "eval_every": 100,
+  "eval_epochs": [
+    1344
+  ],
+  "seed": 1,
+  "ve_sentinel": "clamp",
+  "state_every": 5,
+  "keep_every": 100,
+  "fastmuon": true,
+  "stop_at": 930
+}

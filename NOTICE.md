@@ -93,3 +93,27 @@ pre-trained transformer and BITLSTM, the correction model behind the mixer,
 the packaging of the archive, and a large number of run-time and code-size
 improvements.  A build of the source published here reproduces the submitted
 compressor byte for byte.
+
+## Changes in cmix-neif-beehive
+
+This version (cmix-neif-beehive) was changed in October 2026, on top of
+cmix-neif-1.0 (upstream commit `1c9ea5ed57ec`, Marcus Wölk). All changes are in one Git commit (tag
+`cmix-neif-beehive`) and are described in `README.md` section 3 and `training/README.md` section 12. In
+summary:
+
+* a new pre-trained transformer replaces the cmix-neif-1.0 model: new weight
+  container `weights-poc8m_w2048_p15f_v3bf16_gestrichen_v4.c4` (file name kept), its fingerprint in
+  `src/transformer.h`, and the engine kernels and loader for it in `src/tf1/` (AttnRes, PPMd-prior head,
+  shared-KV attention, mixed-width weight rows, attention window 1536);
+* three context-mixing settings compiled in through `makefile` (`src/cmx_exp.h`, `src/predictor.cpp`,
+  `src/mixer/byte-mixer.cpp`, `src/context-manager.h`, `src/coder/encoder.cpp`, `src/runner.cpp`,
+  `src/bit_head.cpp`);
+* the software-prefetch distance of the dense weight kernels (`src/tf1/opt/qmat_dense.cpp`);
+* the training code of the new model in `training/beehive/`, derived from the cmix-neif-1.0 training tree and
+  Vladimir Ivanov's fx2-cmix-transformer training code;
+* the tested `comp9`, `archive9`, `comp9.args` and their `SHA256SUMS`, as assets of the GitHub release
+  `cmix-neif-beehive` (not in Git);
+* documentation: this section, a new `README.md` and section 12 of `training/README.md`; the upstream README is
+  kept verbatim as `README_cmix-neif-1.0.md`.
+
+The copyright and licence notices of all files, and every section above, are unchanged.
